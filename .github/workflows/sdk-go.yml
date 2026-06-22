@@ -68,9 +68,13 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          # v1.61 was built with Go 1.23 and refuses go.mod's `go 1.25`
-          # with exit 3. v1.64+ is the first line to ship a Go-1.25-
-          # compatible toolchain (OctoBoooot review on octo-auth#2).
-          version: v1.64
+          # v2.x is the first golangci-lint line shipping a Go-1.25
+          # compatible toolchain. v1.61 / v1.64 (built with Go ≤ 1.24)
+          # refuse go.mod's `go 1.25` with exit 3, and `go mod tidy`
+          # keeps reverting any 1.24 downgrade because transitive deps
+          # require 1.25 (OctoBoooot delta review on octo-auth#2).
+          # v2 uses a different config schema; .golangci.yml updated
+          # accordingly.
+          version: v2.4.0
           working-directory: sdk-go
           args: --timeout=5m

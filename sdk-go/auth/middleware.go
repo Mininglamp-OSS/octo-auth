@@ -92,14 +92,36 @@ func (c *Client) Middleware(scope Scope) gin.HandlerFunc {
 		// validation against verified spaces). Critical: do NOT
 		// overwrite a server-verified bot/apikey binding with the
 		// client-supplied header — yujiawei review on octo-auth#2
-		// flagged this as a P0 cross-space exposure. If the
-		// verify-bot or verify-api-key response already set
-		// CtxKeySpaceID (the binding the contract demands callers
-		// fail-closed against), only set the header value when the
-		// two match; mismatches are rejected by RequireSpaceMember
-		// against the verified spaces list.
+		// flagged this as a P0 cross-space exposure.
+		//
+		// Scope of the guard: only when the binding is *authoritative*,
+		// not when CtxKeySpaceID was set as a display hint. Per the
+		// contract (auth-v1.yaml VerifyBotResp.space_id):
+		//   - User Bots: space_id is a display hint (first active
+		//     space_member row). The bot owner may legitimately want
+		//     X-Space-Id to route across the owner's other spaces, so
+		//     the header MUST be allowed to override the hint.
+		//   - App Bots Scope="space": space_id IS the binding; the
+		//     header must NOT override (the verify-context-included
+		//     branch in injectBotContext also sets verified-spaces so
+		//     RequireSpaceMember enforces).
+		//   - App Bots Scope="platform": no binding; header is fine.
+		//   - API Keys: SpaceID is the binding.
+		//
+		// We disambiguate via CtxKeyContextIncluded — only the
+		// authoritative paths set it (sessions ContextIncluded=true,
+		// App Bots Scope=space, API Keys ContextIncluded=true).
+		// OctoBoooot delta review on octo-auth#2 (577175c) caught the
+		// User Bot regression when this guard fired unconditionally.
 		if sp := ctx.GetHeader("X-Space-Id"); sp != "" {
-			if existing, ok := ctx.Get(CtxKeySpaceID); !ok || existing == "" {
+			authoritative := false
+			if v, ok := ctx.Get(CtxKeyContextIncluded); ok {
+				if b, ok := v.(bool); ok && b {
+					authoritative = true
+				}
+			}
+			existing, ok := ctx.Get(CtxKeySpaceID)
+			if !authoritative || !ok || existing == "" {
 				ctx.Set(CtxKeySpaceID, sp)
 			}
 		}
