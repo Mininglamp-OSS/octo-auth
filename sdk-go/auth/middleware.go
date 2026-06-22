@@ -213,6 +213,9 @@ func injectUserContext(ctx *gin.Context, r *contract.VerifyUserResp) {
 	ctx.Set(CtxKeyName, r.Name)
 	ctx.Set(CtxKeyRole, r.Role)
 	ctx.Set(CtxKeyAuthKind, AuthKindSession)
+	if r.Language != "" {
+		ctx.Set(CtxKeyLanguage, r.Language)
+	}
 	if r.ContextIncluded {
 		ctx.Set(CtxKeyContextIncluded, true)
 		ctx.Set(CtxKeyVerifiedSpaces, r.Spaces)
@@ -232,6 +235,12 @@ func injectBotContext(ctx *gin.Context, r *contract.VerifyBotResp) {
 	ctx.Set(CtxKeyAuthKind, AuthKindBot)
 	ctx.Set(CtxKeyBotKind, r.BotKind)
 	ctx.Set(CtxKeyOwnerUID, r.OwnerUID)
+	if r.OwnerName != "" {
+		ctx.Set(CtxKeyOwnerName, r.OwnerName)
+	}
+	if r.Language != "" {
+		ctx.Set(CtxKeyLanguage, r.Language)
+	}
 	if r.Scope != "" {
 		ctx.Set(CtxKeyAppBotScope, r.Scope)
 	}

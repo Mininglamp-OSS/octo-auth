@@ -9,6 +9,7 @@ const (
 	CtxKeyLoginUID           = "octoauth.login_uid"
 	CtxKeyName               = "octoauth.name"
 	CtxKeyRole               = "octoauth.role"
+	CtxKeyLanguage           = "octoauth.language"
 	CtxKeyAuthKind           = "octoauth.auth_kind"
 	CtxKeySpaceID            = "octoauth.space_id"
 	CtxKeyRelatedUIDs        = "octoauth.related_uids"
@@ -17,6 +18,7 @@ const (
 	CtxKeyContextIncluded    = "octoauth.context_included"
 	CtxKeyBotKind            = "octoauth.bot_kind"
 	CtxKeyOwnerUID           = "octoauth.owner_uid"
+	CtxKeyOwnerName          = "octoauth.owner_name"
 	CtxKeyAppBotScope        = "octoauth.app_bot_scope"
 )
 
@@ -32,6 +34,17 @@ func GetName(c *gin.Context) string { return getString(c, CtxKeyName) }
 // GetRole returns the system role for user sessions ("" / "admin" /
 // "superAdmin"); empty for bots and API keys.
 func GetRole(c *gin.Context) string { return getString(c, CtxKeyRole) }
+
+// GetLanguage returns the BCP-47 language tag the verify response
+// carried (user.language for sessions, bot owner's language for bots).
+// Empty when the response omitted the field — caller should fall back
+// to Accept-Language or its own default.
+func GetLanguage(c *gin.Context) string { return getString(c, CtxKeyLanguage) }
+
+// GetOwnerName returns the bot owner's display name for AuthKindBot
+// requests; empty otherwise (and empty for bots where the verify
+// response omitted owner_name, e.g. unhydrated App Bot registry hits).
+func GetOwnerName(c *gin.Context) string { return getString(c, CtxKeyOwnerName) }
 
 // GetAuthKind tells what kind of token authenticated the request.
 func GetAuthKind(c *gin.Context) AuthKind {
