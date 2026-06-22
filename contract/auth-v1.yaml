@@ -1,0 +1,270 @@
+openapi: 3.1.0
+info:
+  title: Octo Auth Verify Contract
+  description: |
+    The three `/v1/auth/verify*` endpoints octo-server's `modules/auth`
+    package exposes for downstream services (octo-matter, octo-fleet,
+    future modules) to authenticate user / bot / api-key tokens.
+
+    This OpenAPI document is the single source of truth — the octo-server
+    in-tree DTOs in `modules/auth/contract.go` are kept aligned 1:1 and
+    a CI workflow diff-checks the two on every change.
+
+    See README.md for the broader context and architectural rationale.
+  version: "1.0.0"
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: https://octo-server.example.com
+    description: production placeholder; configure your real octo-server URL
+
+paths:
+  /v1/auth/verify:
+    post:
+      summary: Verify a user session token
+      description: |
+        Resolves a user session token (no prefix) to identity. With
+        `include=context`, also returns the user's authorised
+        `spaces[]` and `owned_bots_by_space{}` map so the caller can
+        fail-closed on `X-Space-Id` mismatches without a second
+        round-trip.
+
+        Anti-enumeration: every "token missing / cache miss / decode
+        error" outcome collapses to the same 401 `AUTH_TOKEN_INVALID`
+        response. The specific reason is in octo-server's audit log.
+      operationId: verifyUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyUserReq"
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyUserResp"
+        "401":
+          description: Token invalid / missing / expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /v1/auth/verify-bot:
+    post:
+      summary: Verify a bot token
+      description: |
+        Resolves a bot token to identity. Token prefix routes:
+        - `bf_<...>` (or legacy unprefixed) → User Bot lookup; returns
+          `bot_kind: "user"`.
+        - `app_<...>` → App Bot lookup; returns `bot_kind: "app"` and
+          `scope` (platform | space). When `scope = "space"`, `space_id`
+          is the binding the caller MUST fail-closed against.
+
+        Status: when the bot row exists but `status != 1` (unpublished
+        App Bot), responds 503 `AUTH_BOT_UNAVAILABLE` — distinct from
+        401 because the bot owner can fix it.
+      operationId: verifyBot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyBotReq"
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyBotResp"
+        "401":
+          description: Token invalid / no matching bot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: App Bot exists but is currently unpublished
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /v1/auth/verify-api-key:
+    post:
+      summary: Verify a uk_ API key
+      description: |
+        Resolves a `uk_<...>`-prefixed API key (used by daemons such as
+        octo-fleet's runtime daemon) to its owner identity. Until real
+        `uk_` storage ships in octo-server, every call resolves to
+        no-match → 401 (the endpoint contract is in place so SDK
+        consumers stop hitting 404).
+      operationId: verifyAPIKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyAPIKeyReq"
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyAPIKeyResp"
+        "401":
+          description: API key invalid / not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+components:
+  schemas:
+    VerifyUserReq:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: User session token (no prefix).
+        include:
+          type: array
+          description: Optional context expansions. Currently `"context"` triggers spaces + owned_bots_by_space.
+          items:
+            type: string
+            enum: [context]
+
+    VerifyUserResp:
+      type: object
+      required: [schema_version, kind, uid, name, role, owned_bots]
+      properties:
+        schema_version:
+          type: integer
+          enum: [1]
+        kind:
+          type: string
+          enum: [user]
+        uid:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          description: System role — "" / "admin" / "superAdmin".
+        language:
+          type: string
+          description: BCP-47 tag (optional; falls back to Accept-Language at downstream consumer).
+        owned_bots:
+          type: array
+          items: { $ref: "#/components/schemas/OwnedBot" }
+        context_included:
+          type: boolean
+          description: True when the request supplied include=context and the server populated the context fields.
+        spaces:
+          type: array
+          description: Spaces the user is a member of. Required when context_included=true.
+          items: { type: string }
+        owned_bots_by_space:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    OwnedBot:
+      type: object
+      required: [uid, name]
+      properties:
+        uid: { type: string }
+        name: { type: string }
+
+    VerifyBotReq:
+      type: object
+      required: [bot_token]
+      properties:
+        bot_token:
+          type: string
+          description: Bot token. `bf_` for User Bots, `app_` for App Bots, legacy unprefixed treated as User Bot.
+
+    VerifyBotResp:
+      type: object
+      required: [schema_version, kind, bot_uid, bot_name, bot_kind, owner_uid, owner_name, space_id]
+      properties:
+        schema_version: { type: integer, enum: [1] }
+        kind: { type: string, enum: [bot] }
+        bot_uid: { type: string }
+        bot_name: { type: string }
+        bot_kind:
+          type: string
+          enum: [user, app]
+        owner_uid: { type: string }
+        owner_name: { type: string }
+        scope:
+          type: string
+          enum: [platform, space]
+          description: App Bot scope. Absent for User Bots.
+        space_id:
+          type: string
+          description: |
+            For App Bots: the binding when scope=space; empty when scope=platform.
+            For User Bots: a display hint — the first active space_member row
+            for the bot. Not a binding.
+        language: { type: string }
+
+    VerifyAPIKeyReq:
+      type: object
+      required: [api_key]
+      properties:
+        api_key:
+          type: string
+          description: API key with uk_ prefix.
+        include:
+          type: array
+          items:
+            type: string
+            enum: [context]
+
+    VerifyAPIKeyResp:
+      type: object
+      required: [schema_version, kind, uid, key_id]
+      properties:
+        schema_version: { type: integer, enum: [1] }
+        kind: { type: string, enum: [apikey] }
+        uid: { type: string }
+        key_id: { type: string }
+        context_included: { type: boolean }
+        space_id: { type: string }
+        owned_bots_by_space:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        schema_version: { type: integer, enum: [1] }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                One of the codes enumerated in errors-v1.yaml.
+                Anti-enumeration: all "token bad" reasons collapse to
+                AUTH_TOKEN_INVALID at the wire; the specific reason is
+                in the server's audit log.
+            message:
+              type: string
+              description: Human-readable message; localised per Accept-Language.
+            http_status:
+              type: integer
+              description: The intended HTTP status (the server may pin the actual response status to 400 for legacy compatibility — see octo-server CLAUDE.md).

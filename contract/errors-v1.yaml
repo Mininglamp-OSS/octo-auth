@@ -1,0 +1,52 @@
+# Error codes for octo-auth contract v1. Enumerated here so SDK
+# generators and contract tests have a single normative source.
+#
+# Anti-enumeration: SDK callers see AUTH_TOKEN_INVALID for every
+# "token bad" reason (missing / decode failure / not found / kind
+# mismatch). The specific reason is only in octo-server's audit log.
+codes:
+  - id: AUTH_TOKEN_MISSING
+    http_status: 401
+    description: |
+      Authorization / token header absent or malformed. Caught client-side
+      by the SDK middleware (prefix validation) before the request is sent;
+      this code is reserved for cases where the wire arrived without a
+      parseable token.
+
+  - id: AUTH_TOKEN_INVALID
+    http_status: 401
+    description: |
+      Token does not match any known session / bot / api key, OR the token
+      payload failed to decode. Anti-enumeration: all "bad token" outcomes
+      collapse to this code at the wire — the specific reason is in the
+      server's audit log only.
+
+  - id: AUTH_BOT_UNAVAILABLE
+    http_status: 503
+    description: |
+      App Bot exists in the catalogue but its status is not 1 (published).
+      Distinct from AUTH_TOKEN_INVALID because the bot owner can fix it —
+      caller should retry after publication, not assume the token is bad.
+
+  - id: AUTH_KIND_MISMATCH
+    http_status: 403
+    description: |
+      Endpoint scope (daemon / web / bot) does not match the token's kind
+      (apikey / session / bot). Indicates a routing misconfiguration on
+      the client side; an SDK should never produce this against a correctly
+      mounted middleware.
+
+  - id: AUTH_SPACE_FORBIDDEN
+    http_status: 403
+    description: |
+      X-Space-Id header is set to a space the verified identity is not a
+      member of. The SDK's RequireSpaceMember() decorator emits this when
+      context_included=true on the verify response and the header doesn't
+      match any of the verified spaces.
+
+  - id: AUTH_UPSTREAM_UNAVAILABLE
+    http_status: 503
+    description: |
+      SDK-side code, not a server response. The SDK middleware emits this
+      when octo-server returned 5xx during verification — caller should
+      retry rather than assume the token is bad.

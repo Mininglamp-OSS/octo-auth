@@ -1,0 +1,73 @@
+name: sdk-go
+
+on:
+  pull_request:
+    paths:
+      - "sdk-go/**"
+      - "contract/**"
+      - ".github/workflows/sdk-go.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sdk-go/**"
+      - "contract/**"
+      - ".github/workflows/sdk-go.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.24", "1.25"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: sdk-go/go.sum
+
+      - name: Tidy check
+        working-directory: sdk-go
+        run: |
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum; then
+            echo "::error::go.mod / go.sum are out of date; run 'go mod tidy' in sdk-go/"
+            git diff -- go.mod go.sum
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: sdk-go
+        run: go build ./...
+
+      - name: Vet
+        working-directory: sdk-go
+        run: go vet ./...
+
+      - name: Test
+        working-directory: sdk-go
+        run: go test -race -shuffle=on -count=1 -timeout 5m ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: sdk-go/go.sum
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61
+          working-directory: sdk-go
+          args: --timeout=5m
