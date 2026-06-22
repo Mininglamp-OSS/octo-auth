@@ -187,3 +187,104 @@ func TestRequireSpaceMemberCompatPasses(t *testing.T) {
 		t.Fatalf("compat mode: status=%d want 200", w.Code)
 	}
 }
+
+// TestRequireSpaceMemberBotFailClosed pins yujiawei's P0 fix on
+// octo-auth#2: for space-scoped App Bots, the SDK now treats the
+// server-verified SpaceID as the authoritative verified-spaces set and
+// fails-closed on a non-matching X-Space-Id. The pre-fix middleware
+// silently passed every bot request because VerifyBotResp has no
+// ContextIncluded field — IsContextIncluded returned false and
+// RequireSpaceMember took the compat branch.
+func TestRequireSpaceMemberBotFailClosed(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind: "app", Scope: "space", SpaceID: "sp_A",
+			OwnerUID: "u1",
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeBot), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	// Attack: bot is bound to sp_A; spoof X-Space-Id sp_B.
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer app_test_app_bot_token_value_here")
+	req.Header.Set("X-Space-Id", "sp_B")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("bot X-Space-Id forgery must 403; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestRequireSpaceMemberBotMatchingPasses confirms the positive
+// control: when the bot's X-Space-Id matches its binding, the gate
+// passes.
+func TestRequireSpaceMemberBotMatchingPasses(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind: "app", Scope: "space", SpaceID: "sp_A",
+			OwnerUID: "u1",
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeBot), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) {
+		if GetSpaceID(ctx) != "sp_A" {
+			t.Errorf("space_id leaked to header value; want server binding sp_A")
+		}
+		ctx.Status(200)
+	})
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer app_test_app_bot_token_value_here")
+	req.Header.Set("X-Space-Id", "sp_A")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bot with matching X-Space-Id must pass; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestBotSpaceBindingNotOverridable pins the second half of
+// yujiawei's P0: the X-Space-Id header MUST NOT overwrite the
+// server-verified bot binding stored at CtxKeySpaceID.
+func TestBotSpaceBindingNotOverridable(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind: "app", Scope: "space", SpaceID: "sp_A",
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeBot))
+	r.GET("/x", func(ctx *gin.Context) {
+		if GetSpaceID(ctx) != "sp_A" {
+			t.Errorf("space_id was overridden by header: got %q want sp_A", GetSpaceID(ctx))
+		}
+		ctx.Status(200)
+	})
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer app_test_app_bot_token_value_here")
+	req.Header.Set("X-Space-Id", "sp_evil")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("middleware should pass (RequireSpaceMember not chained); got %d (body: %s)", w.Code, w.Body.String())
+	}
+}

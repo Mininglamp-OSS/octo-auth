@@ -89,9 +89,19 @@ func (c *Client) Middleware(scope Scope) gin.HandlerFunc {
 		}
 
 		// Carry X-Space-Id forward (RequireSpaceMember does fail-closed
-		// validation against verified spaces).
+		// validation against verified spaces). Critical: do NOT
+		// overwrite a server-verified bot/apikey binding with the
+		// client-supplied header — yujiawei review on octo-auth#2
+		// flagged this as a P0 cross-space exposure. If the
+		// verify-bot or verify-api-key response already set
+		// CtxKeySpaceID (the binding the contract demands callers
+		// fail-closed against), only set the header value when the
+		// two match; mismatches are rejected by RequireSpaceMember
+		// against the verified spaces list.
 		if sp := ctx.GetHeader("X-Space-Id"); sp != "" {
-			ctx.Set(CtxKeySpaceID, sp)
+			if existing, ok := ctx.Get(CtxKeySpaceID); !ok || existing == "" {
+				ctx.Set(CtxKeySpaceID, sp)
+			}
 		}
 
 		ctx.Next()
@@ -102,6 +112,18 @@ func (c *Client) Middleware(scope Scope) gin.HandlerFunc {
 // is not in the verified spaces[] list. When the verify response did
 // NOT include context (octo-server pre-v1 / opt-out), the decorator
 // passes with a metric increment so the upgrade window is observable.
+//
+// Bot principals: VerifyBotResp does not carry context_included or
+// spaces[], but the server-verified space binding (resp.SpaceID for
+// scope=space bots) IS authoritative. injectBotContext sets
+// CtxKeyContextIncluded=true + CtxKeyVerifiedSpaces=[r.SpaceID] for
+// space-scoped bots so this decorator enforces against the bot's
+// binding. Platform-scope bots (Scope="platform") do not set the
+// context flag — they can access any space the caller explicitly
+// targets, mirroring the legacy "no binding" semantic.
+//
+// yujiawei P0 review on octo-auth#2 flagged the original revision as
+// a silent no-op for all bot principals; this version enforces.
 func (c *Client) RequireSpaceMember() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		sp := ctx.GetHeader("X-Space-Id")
@@ -246,6 +268,18 @@ func injectBotContext(ctx *gin.Context, r *contract.VerifyBotResp) {
 	}
 	if r.SpaceID != "" {
 		ctx.Set(CtxKeySpaceID, r.SpaceID)
+		// yujiawei P0 review on octo-auth#2: VerifyBotResp lacks a
+		// ContextIncluded field, so RequireSpaceMember was a silent
+		// no-op for all bot principals. For space-scoped bots
+		// (Scope="space"), the server-verified SpaceID is the
+		// authoritative binding — populate the same SDK-context keys
+		// the user path uses so RequireSpaceMember enforces against
+		// {r.SpaceID} as the only allowed space. Platform-scope bots
+		// stay context-uncomitted (they're allowed everywhere).
+		if r.Scope == "space" {
+			ctx.Set(CtxKeyContextIncluded, true)
+			ctx.Set(CtxKeyVerifiedSpaces, []string{r.SpaceID})
+		}
 	}
 	// related_uids = [self, owner]
 	rel := []string{r.BotUID}

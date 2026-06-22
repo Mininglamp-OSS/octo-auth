@@ -117,7 +117,7 @@ func (h collectorHook) ObserveCacheEvict(reason string) { h.c.ObserveCacheEvict(
 // VerifyUser verifies a user session token.
 func (c *Client) VerifyUser(ctx context.Context, token string, includeContext bool) (*contract.VerifyUserResp, error) {
 	const kind = "user"
-	if entry, ok := c.cache.Get(kind, token); ok {
+	if entry, ok := c.cache.Get(kind, token, includeContext); ok {
 		c.col.ObserveVerify(kind, "cache_hit", 0)
 		if entry.ResultErr != nil {
 			return nil, entry.ResultErr
@@ -137,18 +137,21 @@ func (c *Client) VerifyUser(ctx context.Context, token string, includeContext bo
 		// Negative cache only for ErrTokenInvalid. ErrUpstreamUnavailable
 		// must NOT be cached — that would make a transient outage stick.
 		if errors.Is(err, ErrTokenInvalid) {
-			c.cache.Set(kind, token, &cachedIdentity{ResultErr: err})
+			c.cache.Set(kind, token, includeContext, &cachedIdentity{ResultErr: err})
 		}
 		return nil, err
 	}
-	c.cache.Set(kind, token, &cachedIdentity{UserResp: &resp})
+	c.cache.Set(kind, token, includeContext, &cachedIdentity{UserResp: &resp})
 	return &resp, nil
 }
 
 // VerifyBot verifies a bot token (bf_ for User Bot, app_ for App Bot).
+// Bot verify does not take an includeContext flag — the bot response
+// shape is fixed at the contract level — so cache uses includeContext=false
+// consistently for the bot kind.
 func (c *Client) VerifyBot(ctx context.Context, botToken string) (*contract.VerifyBotResp, error) {
 	const kind = "bot"
-	if entry, ok := c.cache.Get(kind, botToken); ok {
+	if entry, ok := c.cache.Get(kind, botToken, false); ok {
 		c.col.ObserveVerify(kind, "cache_hit", 0)
 		if entry.ResultErr != nil {
 			return nil, entry.ResultErr
@@ -161,19 +164,24 @@ func (c *Client) VerifyBot(ctx context.Context, botToken string) (*contract.Veri
 	err := c.callVerify(ctx, "/v1/auth/verify-bot", contract.VerifyBotReq{BotToken: botToken}, &resp)
 	c.col.ObserveVerify(kind, resultLabel(err), time.Since(start).Seconds())
 	if err != nil {
-		if errors.Is(err, ErrTokenInvalid) || errors.Is(err, ErrBotUnavailable) {
-			c.cache.Set(kind, botToken, &cachedIdentity{ResultErr: err})
+		// Negative-cache ErrTokenInvalid (token never existed). NOT
+		// ErrBotUnavailable: that's a transient availability state
+		// (bot owner can publish to fix it) and yujiawei P2 review on
+		// octo-auth#2 flagged caching it as keeping callers stuck at
+		// 503 for the full TTL after a re-publish.
+		if errors.Is(err, ErrTokenInvalid) {
+			c.cache.Set(kind, botToken, false, &cachedIdentity{ResultErr: err})
 		}
 		return nil, err
 	}
-	c.cache.Set(kind, botToken, &cachedIdentity{BotResp: &resp})
+	c.cache.Set(kind, botToken, false, &cachedIdentity{BotResp: &resp})
 	return &resp, nil
 }
 
 // VerifyAPIKey verifies a uk_ API key.
 func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string, includeContext bool) (*contract.VerifyAPIKeyResp, error) {
 	const kind = "apikey"
-	if entry, ok := c.cache.Get(kind, apiKey); ok {
+	if entry, ok := c.cache.Get(kind, apiKey, includeContext); ok {
 		c.col.ObserveVerify(kind, "cache_hit", 0)
 		if entry.ResultErr != nil {
 			return nil, entry.ResultErr
@@ -191,11 +199,11 @@ func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string, includeContext
 	c.col.ObserveVerify(kind, resultLabel(err), time.Since(start).Seconds())
 	if err != nil {
 		if errors.Is(err, ErrTokenInvalid) {
-			c.cache.Set(kind, apiKey, &cachedIdentity{ResultErr: err})
+			c.cache.Set(kind, apiKey, includeContext, &cachedIdentity{ResultErr: err})
 		}
 		return nil, err
 	}
-	c.cache.Set(kind, apiKey, &cachedIdentity{APIKeyResp: &resp})
+	c.cache.Set(kind, apiKey, includeContext, &cachedIdentity{APIKeyResp: &resp})
 	return &resp, nil
 }
 

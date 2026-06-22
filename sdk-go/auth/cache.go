@@ -72,19 +72,31 @@ func newVerifyCache(maxSize int, ttl time.Duration, hook cacheMetricsHook) (*ver
 	return vc, nil
 }
 
-// key returns the SHA-256 cache key for a (kind, token) pair. The raw
-// token never reaches the cache — only its digest is stored, so a heap
-// dump can't leak tokens.
-func cacheKey(kind, token string) string {
-	h := sha256.Sum256([]byte(kind + ":" + token))
+// key returns the SHA-256 cache key for a (kind, token, includeContext)
+// triple. The raw token never reaches the cache — only its digest is
+// stored, so a heap dump can't leak tokens.
+//
+// Why includeContext is part of the key: VerifyUser(t,false) and
+// VerifyUser(t,true) hit the same route with different query semantics
+// — the latter asks octo-server to populate spaces[] + owned_bots_by_space.
+// Without including the flag in the key, a no-context entry would be
+// served to a later context-requiring call; RequireSpaceMember would
+// then take the !IsContextIncluded compatibility branch and silently
+// fail open (yujiawei P1 review on octo-auth#2).
+func cacheKey(kind, token string, includeContext bool) string {
+	ctxBit := "0"
+	if includeContext {
+		ctxBit = "1"
+	}
+	h := sha256.Sum256([]byte(kind + ":" + ctxBit + ":" + token))
 	return hex.EncodeToString(h[:])
 }
 
 // Get returns (entry, true) on hit, (nil, false) on miss-or-stale. A
 // stale entry is removed eagerly so the next Get incurs only one
 // lookup.
-func (vc *verifyCache) Get(kind, token string) (*cachedIdentity, bool) {
-	k := cacheKey(kind, token)
+func (vc *verifyCache) Get(kind, token string, includeContext bool) (*cachedIdentity, bool) {
+	k := cacheKey(kind, token, includeContext)
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 	entry, ok := vc.store.Get(k)
@@ -93,9 +105,11 @@ func (vc *verifyCache) Get(kind, token string) (*cachedIdentity, bool) {
 	}
 	if vc.now().Sub(entry.StoredAt) >= vc.ttl {
 		// Suppress the OnEvict attribution: we'll report "ttl" ourselves.
+		// defer-reset so a panic in store.Remove doesn't leave the flag
+		// stuck (yujiawei P2 review on octo-auth#2).
 		vc.suppressOE = true
+		defer func() { vc.suppressOE = false }()
 		vc.store.Remove(k)
-		vc.suppressOE = false
 		if vc.collect != nil {
 			vc.collect.ObserveCacheEvict("ttl")
 		}
@@ -111,9 +125,9 @@ func (vc *verifyCache) Get(kind, token string) (*cachedIdentity, bool) {
 // stored just like positive ones — TTL applies — so a transient
 // ErrTokenInvalid can't keep failing forever after the token is
 // re-issued.
-func (vc *verifyCache) Set(kind, token string, entry *cachedIdentity) {
+func (vc *verifyCache) Set(kind, token string, includeContext bool, entry *cachedIdentity) {
 	entry.StoredAt = vc.now()
-	k := cacheKey(kind, token)
+	k := cacheKey(kind, token, includeContext)
 	vc.mu.Lock()
 	vc.store.Add(k, entry)
 	vc.mu.Unlock()
@@ -130,14 +144,18 @@ func (vc *verifyCache) Len() int {
 // "drop all cached identities" hook callers may want during a known
 // security incident. Suppresses the OnEvict callback's "capacity"
 // attribution so each removal is reported once as "manual" rather
-// than twice (once as capacity, once as manual).
+// than twice (once as capacity, once as manual). defer-resets the
+// flag so a panic in store.Purge can't leave it stuck (yujiawei P2
+// review on octo-auth#2).
 func (vc *verifyCache) Purge() {
 	vc.mu.Lock()
 	n := vc.store.Len()
 	vc.suppressOE = true
+	defer func() {
+		vc.suppressOE = false
+		vc.mu.Unlock()
+	}()
 	vc.store.Purge()
-	vc.suppressOE = false
-	vc.mu.Unlock()
 	if vc.collect != nil {
 		for i := 0; i < n; i++ {
 			vc.collect.ObserveCacheEvict("manual")
