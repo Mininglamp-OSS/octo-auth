@@ -68,6 +68,9 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.61
+          # v1.61 was built with Go 1.23 and refuses go.mod's `go 1.25`
+          # with exit 3. v1.64+ is the first line to ship a Go-1.25-
+          # compatible toolchain (OctoBoooot review on octo-auth#2).
+          version: v1.64
           working-directory: sdk-go
           args: --timeout=5m

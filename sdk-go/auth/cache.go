@@ -25,12 +25,22 @@ type cachedIdentity struct {
 // TTL eviction. The LRU itself enforces the capacity bound; TTL is
 // checked at Get time (no background sweeper — we don't want goroutine
 // management for an in-process cache).
+//
+// Eviction-metric attribution: the LRU's OnEvict callback fires for
+// every removal — capacity push-out, manual Remove(), AND Purge(). To
+// keep the per-reason counter honest we set suppressOE to true around
+// our own Remove/Purge calls; the OnEvict closure observes that flag
+// and skips its metric attribution when set. Net effect: OnEvict's
+// "capacity" counter only counts genuine LRU push-outs, the "ttl"
+// counter only counts TTL evictions, and the "manual" counter only
+// counts Purge calls (OctoBoooot review on octo-auth#2).
 type verifyCache struct {
-	mu       sync.Mutex
-	store    *lru.Cache[string, *cachedIdentity]
-	ttl      time.Duration
-	now      func() time.Time
-	collect  cacheMetricsHook
+	mu         sync.Mutex
+	store      *lru.Cache[string, *cachedIdentity]
+	ttl        time.Duration
+	now        func() time.Time
+	collect    cacheMetricsHook
+	suppressOE bool // when true, the OnEvict callback skips metric attribution
 }
 
 // cacheMetricsHook is the subset of metrics.Collector verifyCache uses.
@@ -41,10 +51,16 @@ type cacheMetricsHook interface {
 }
 
 func newVerifyCache(maxSize int, ttl time.Duration, hook cacheMetricsHook) (*verifyCache, error) {
+	vc := &verifyCache{ttl: ttl, now: time.Now, collect: hook}
 	c, err := lru.NewWithEvict(maxSize, func(_ string, _ *cachedIdentity) {
-		// LRU eviction is always capacity-driven (the only way an item
-		// leaves the LRU is when it's pushed off). TTL evictions happen
-		// implicitly via the Get-time staleness check.
+		// OnEvict fires for ALL removal paths (capacity push-out, our own
+		// Remove for TTL, our own Purge). Only attribute to "capacity"
+		// when we did NOT initiate the removal ourselves — i.e. when
+		// suppressOE is false. The TTL and manual paths set
+		// suppressOE=true around their store.Remove / store.Purge calls.
+		if vc.suppressOE {
+			return
+		}
 		if hook != nil {
 			hook.ObserveCacheEvict("capacity")
 		}
@@ -52,7 +68,8 @@ func newVerifyCache(maxSize int, ttl time.Duration, hook cacheMetricsHook) (*ver
 	if err != nil {
 		return nil, err
 	}
-	return &verifyCache{store: c, ttl: ttl, now: time.Now, collect: hook}, nil
+	vc.store = c
+	return vc, nil
 }
 
 // key returns the SHA-256 cache key for a (kind, token) pair. The raw
@@ -75,7 +92,10 @@ func (vc *verifyCache) Get(kind, token string) (*cachedIdentity, bool) {
 		return nil, false
 	}
 	if vc.now().Sub(entry.StoredAt) >= vc.ttl {
+		// Suppress the OnEvict attribution: we'll report "ttl" ourselves.
+		vc.suppressOE = true
 		vc.store.Remove(k)
+		vc.suppressOE = false
 		if vc.collect != nil {
 			vc.collect.ObserveCacheEvict("ttl")
 		}
@@ -108,11 +128,15 @@ func (vc *verifyCache) Len() int {
 
 // Purge wipes the cache. Exposed for tests and for an emergency
 // "drop all cached identities" hook callers may want during a known
-// security incident.
+// security incident. Suppresses the OnEvict callback's "capacity"
+// attribution so each removal is reported once as "manual" rather
+// than twice (once as capacity, once as manual).
 func (vc *verifyCache) Purge() {
 	vc.mu.Lock()
 	n := vc.store.Len()
+	vc.suppressOE = true
 	vc.store.Purge()
+	vc.suppressOE = false
 	vc.mu.Unlock()
 	if vc.collect != nil {
 		for i := 0; i < n; i++ {
