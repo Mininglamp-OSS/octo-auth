@@ -66,15 +66,14 @@ jobs:
           cache-dependency-path: sdk-go/go.sum
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # golangci-lint-action v7 is the first line that supports
+        # golangci-lint v2.x (v6 errors out with "golangci-lint v2 is
+        # not supported by golangci-lint-action v6, you must update to
+        # golangci-lint-action v7"). v2.x of the linter is itself
+        # required because v1.x builds against Go ≤ 1.24 and rejects
+        # go.mod's `go 1.25` with exit 3.
+        uses: golangci/golangci-lint-action@v7
         with:
-          # v2.x is the first golangci-lint line shipping a Go-1.25
-          # compatible toolchain. v1.61 / v1.64 (built with Go ≤ 1.24)
-          # refuse go.mod's `go 1.25` with exit 3, and `go mod tidy`
-          # keeps reverting any 1.24 downgrade because transitive deps
-          # require 1.25 (OctoBoooot delta review on octo-auth#2).
-          # v2 uses a different config schema; .golangci.yml updated
-          # accordingly.
           version: v2.4.0
           working-directory: sdk-go
           args: --timeout=5m
