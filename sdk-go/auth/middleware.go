@@ -290,17 +290,32 @@ func injectBotContext(ctx *gin.Context, r *contract.VerifyBotResp) {
 	}
 	if r.SpaceID != "" {
 		ctx.Set(CtxKeySpaceID, r.SpaceID)
-		// yujiawei P0 review on octo-auth#2: VerifyBotResp lacks a
-		// ContextIncluded field, so RequireSpaceMember was a silent
-		// no-op for all bot principals. For space-scoped bots
-		// (Scope="space"), the server-verified SpaceID is the
-		// authoritative binding — populate the same SDK-context keys
-		// the user path uses so RequireSpaceMember enforces against
-		// {r.SpaceID} as the only allowed space. Platform-scope bots
-		// stay context-uncomitted (they're allowed everywhere).
-		if r.Scope == "space" {
-			ctx.Set(CtxKeyContextIncluded, true)
+	}
+	// yujiawei P0 review on octo-auth#2: VerifyBotResp lacks a
+	// ContextIncluded field, so RequireSpaceMember was a silent
+	// no-op for all bot principals. For space-scoped bots
+	// (Scope="space"), the server-verified SpaceID is the
+	// authoritative binding — populate the same SDK-context keys
+	// the user path uses so RequireSpaceMember enforces against
+	// {r.SpaceID} as the only allowed space.
+	//
+	// OctoBoooot round-4 P0 (carried into round-5): if octo-server
+	// returns Scope="space" but SpaceID="" (a contract violation,
+	// not a legal value), the prior revision only set the keys
+	// inside the `if r.SpaceID != ""` outer guard, so a
+	// contract-violating response left CtxKeyContextIncluded unset
+	// and RequireSpaceMember fell into the compat-pass branch —
+	// accepting any X-Space-Id. Fail closed here instead: set
+	// CtxKeyContextIncluded=true with an empty verified-spaces list,
+	// guaranteeing RequireSpaceMember 403s on any non-empty
+	// X-Space-Id rather than silently allowing cross-space access.
+	// Platform-scope bots are unaffected; they stay context-uncommitted.
+	if r.Scope == "space" {
+		ctx.Set(CtxKeyContextIncluded, true)
+		if r.SpaceID != "" {
 			ctx.Set(CtxKeyVerifiedSpaces, []string{r.SpaceID})
+		} else {
+			ctx.Set(CtxKeyVerifiedSpaces, []string{})
 		}
 	}
 	// related_uids = [self, owner]
@@ -319,10 +334,25 @@ func injectAPIKeyContext(ctx *gin.Context, r *contract.VerifyAPIKeyResp) {
 	}
 	if r.ContextIncluded {
 		ctx.Set(CtxKeyContextIncluded, true)
-		// API key context only exposes per-space owned bots; the
-		// verified-spaces list is the set of keys.
-		spaces := make([]string, 0, len(r.OwnedBotsBySpace))
+		// Verified spaces = union(OwnedBotsBySpace keys, {r.SpaceID}).
+		// Jerry-Xin round-4 P0 on octo-auth#2: the prior revision built
+		// the set from OwnedBotsBySpace keys only, so an API key bound to
+		// a single space with no owned bots
+		// (context_included=true, space_id="sp_A", owned_bots_by_space={})
+		// produced an empty verified-spaces list — RequireSpaceMember
+		// then 403s a legitimate `X-Space-Id: sp_A` request. The bound
+		// SpaceID IS an authoritative space membership signal, so it
+		// must be in the verified set. Dedup defensively in case
+		// OwnedBotsBySpace also lists the bound space.
+		spaceSet := make(map[string]struct{}, len(r.OwnedBotsBySpace)+1)
 		for k := range r.OwnedBotsBySpace {
+			spaceSet[k] = struct{}{}
+		}
+		if r.SpaceID != "" {
+			spaceSet[r.SpaceID] = struct{}{}
+		}
+		spaces := make([]string, 0, len(spaceSet))
+		for k := range spaceSet {
 			spaces = append(spaces, k)
 		}
 		ctx.Set(CtxKeyVerifiedSpaces, spaces)

@@ -288,3 +288,104 @@ func TestBotSpaceBindingNotOverridable(t *testing.T) {
 		t.Fatalf("middleware should pass (RequireSpaceMember not chained); got %d (body: %s)", w.Code, w.Body.String())
 	}
 }
+
+// TestRequireSpaceMemberBotEmptySpaceIDFailClosed pins OctoBoooot's
+// round-4 P0 on octo-auth#2: if octo-server returns a contract-violating
+// VerifyBotResp with Scope="space" and SpaceID="", the prior revision
+// silently fell into the compat-pass branch (RequireSpaceMember had no
+// CtxKeyContextIncluded to enforce on), and any X-Space-Id was accepted.
+// The fix sets CtxKeyContextIncluded=true with an empty verified-spaces
+// list so any non-empty X-Space-Id is denied with 403.
+func TestRequireSpaceMemberBotEmptySpaceIDFailClosed(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind: "app", Scope: "space", SpaceID: "", // contract violation
+			OwnerUID: "u1",
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeBot), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer app_test_app_bot_token_value_here")
+	req.Header.Set("X-Space-Id", "sp_attacker_chose")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("contract-violating Scope=space + empty SpaceID with non-empty X-Space-Id MUST 403 (fail-closed); got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestRequireSpaceMemberAPIKeyBoundSpaceMatchPasses pins Jerry-Xin's
+// round-4 P0 on octo-auth#2: an API key bound to a single space with
+// no owned bots (verify response: context_included=true, space_id="sp_A",
+// owned_bots_by_space={}) MUST pass RequireSpaceMember when the request
+// header X-Space-Id matches the bound space. The prior revision built
+// verified-spaces from OwnedBotsBySpace keys only, producing an empty
+// list — and 403ing every legitimate caller of an unbound-bot API key.
+func TestRequireSpaceMemberAPIKeyBoundSpaceMatchPasses(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+			SchemaVersion: 1, Kind: "apikey",
+			UID:             "u_owner",
+			KeyID:           "k1",
+			SpaceID:         "sp_A",
+			ContextIncluded: true,
+			// OwnedBotsBySpace deliberately empty: the legitimate
+			// "API key bound to single space, no owned bots" shape.
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeDaemon), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	apiKey := "uk_" + "k1234567890123456789012345678901"
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Space-Id", "sp_A")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("API key bound to sp_A with matching X-Space-Id MUST pass; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestRequireSpaceMemberAPIKeyBoundSpaceMismatchFailsClosed is the
+// negative-control complement: API key bound to sp_A with
+// X-Space-Id=sp_B (and no owned bots in sp_B) MUST 403.
+func TestRequireSpaceMemberAPIKeyBoundSpaceMismatchFailsClosed(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+			SchemaVersion: 1, Kind: "apikey",
+			UID: "u_owner", KeyID: "k1",
+			SpaceID: "sp_A", ContextIncluded: true,
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeDaemon), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	apiKey := "uk_" + "k1234567890123456789012345678901"
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Space-Id", "sp_B")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("API key bound to sp_A with non-matching X-Space-Id sp_B MUST 403; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
