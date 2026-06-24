@@ -59,11 +59,20 @@ paths:
       summary: Verify a bot token
       description: |
         Resolves a bot token to identity. Token prefix routes:
-        - `bf_<...>` (or legacy unprefixed) → User Bot lookup; returns
-          `bot_kind: "user"`.
+        - `bf_<...>` → User Bot lookup; returns `bot_kind: "user"`.
         - `app_<...>` → App Bot lookup; returns `bot_kind: "app"` and
           `scope` (platform | space). When `scope = "space"`, `space_id`
           is the binding the caller MUST fail-closed against.
+
+        Bot tokens MUST carry one of the two prefixes above; unprefixed
+        tokens are rejected at the SDK layer with `AUTH_TOKEN_INVALID`.
+        Earlier drafts of this contract claimed unprefixed tokens were
+        classified as User Bots for legacy compatibility, but the SDK's
+        strict prefix-based classification — itself a security property
+        that avoids kind confusion — never implemented that fallback,
+        and Jerry-Xin review on octo-auth#2 flagged the resulting
+        contract/SDK divergence as a blocker. The contract is updated
+        to match the SDK.
 
         Status: when the bot row exists but `status != 1` (unpublished
         App Bot), responds 503 `AUTH_BOT_UNAVAILABLE` — distinct from
@@ -190,7 +199,11 @@ components:
       properties:
         bot_token:
           type: string
-          description: Bot token. `bf_` for User Bots, `app_` for App Bots, legacy unprefixed treated as User Bot.
+          description: |
+            Bot token. `bf_<...>` for User Bots, `app_<...>` for App
+            Bots. Unprefixed tokens are rejected with `AUTH_TOKEN_INVALID`
+            at the SDK layer — see the verify-bot endpoint description
+            for the contract/SDK convergence history.
 
     VerifyBotResp:
       type: object

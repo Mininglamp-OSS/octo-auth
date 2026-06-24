@@ -62,11 +62,20 @@ func GetSpaceID(c *gin.Context) string { return getString(c, CtxKeySpaceID) }
 
 // GetRelatedUIDs returns the set of UIDs whose data this principal is
 // allowed to see — typically [self, owned_bots...] for a user session,
+// GetRelatedUIDs returns [self, owned_bot_1, owned_bot_2…] for a user,
 // [self, owner] for a bot. Empty for API keys (caller composes its own).
+//
+// yujiawei round-5 P2-3: returns a defensive copy. Cached *VerifyUserResp
+// pointers (sdk-go/auth/client.go) are shared across requests; if a
+// handler in-place-modified the slice the cache would silently corrupt
+// for every later request using the same token (and concurrent
+// read+write would race).
 func GetRelatedUIDs(c *gin.Context) []string {
 	if v, ok := c.Get(CtxKeyRelatedUIDs); ok {
 		if s, ok := v.([]string); ok {
-			return s
+			out := make([]string, len(s))
+			copy(out, s)
+			return out
 		}
 	}
 	return nil
@@ -76,10 +85,14 @@ func GetRelatedUIDs(c *gin.Context) []string {
 // authoritatively confirmed the principal is a member of. Populated
 // only when the request asked for include=context. RequireSpaceMember
 // reads this to fail-closed when X-Space-Id is not in the list.
+//
+// Returns a defensive copy — see GetRelatedUIDs note (yujiawei round-5 P2-3).
 func GetVerifiedSpaces(c *gin.Context) []string {
 	if v, ok := c.Get(CtxKeyVerifiedSpaces); ok {
 		if s, ok := v.([]string); ok {
-			return s
+			out := make([]string, len(s))
+			copy(out, s)
+			return out
 		}
 	}
 	return nil
@@ -88,10 +101,19 @@ func GetVerifiedSpaces(c *gin.Context) []string {
 // GetOwnedBotsBySpace returns the per-space bot ownership map populated
 // when include=context was set on the verify request. Empty map vs nil
 // is meaningful: empty = verified-but-none, nil = not-asked.
+//
+// Returns a defensive shallow+inner-slice copy — see GetRelatedUIDs note
+// (yujiawei round-5 P2-3).
 func GetOwnedBotsBySpace(c *gin.Context) map[string][]string {
 	if v, ok := c.Get(CtxKeyOwnedBotsBySpace); ok {
 		if s, ok := v.(map[string][]string); ok {
-			return s
+			out := make(map[string][]string, len(s))
+			for k, v := range s {
+				clone := make([]string, len(v))
+				copy(clone, v)
+				out[k] = clone
+			}
+			return out
 		}
 	}
 	return nil

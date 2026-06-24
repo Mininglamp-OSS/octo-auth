@@ -389,3 +389,71 @@ func TestRequireSpaceMemberAPIKeyBoundSpaceMismatchFailsClosed(t *testing.T) {
 		t.Fatalf("API key bound to sp_A with non-matching X-Space-Id sp_B MUST 403; got %d (body: %s)", w.Code, w.Body.String())
 	}
 }
+
+// TestRequireSpaceMemberAppBotMissingScopeFailClosed pins yujiawei
+// round-5 P1-1 on octo-auth#2: if octo-server returns BotKind="app"
+// with Scope omitted/unknown (a contract violation, since App Bots
+// MUST declare scope), the prior revision left CtxKeyContextIncluded
+// unset and the X-Space-Id override branch treated the binding as
+// non-authoritative, accepting any client-supplied space. Round-6
+// fail-closes by setting verified-spaces=[] so any non-empty
+// X-Space-Id 403s.
+func TestRequireSpaceMemberAppBotMissingScopeFailClosed(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind:  "app",
+			Scope:    "", // contract violation: missing scope
+			SpaceID:  "sp_A",
+			OwnerUID: "u1",
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeBot), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer app_test_app_bot_token_value_here")
+	req.Header.Set("X-Space-Id", "sp_attacker_chose")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("App Bot with missing scope + non-empty X-Space-Id MUST 403; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestRequireSpaceMemberAppBotPlatformScopeAccepts confirms the
+// positive control on the round-6 BotKind=app switch: platform-scoped
+// App Bots remain context-uncomitted and pass through RequireSpaceMember
+// (compat-pass branch). Without this assertion a future refactor could
+// silently start fail-closing platform bots — a P1 availability
+// regression.
+func TestRequireSpaceMemberAppBotPlatformScopeAccepts(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind: "app", Scope: "platform", SpaceID: "",
+			OwnerUID: "u1",
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeBot), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer app_test_app_bot_token_value_here")
+	req.Header.Set("X-Space-Id", "sp_any_target")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Platform App Bot MUST cross spaces; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}

@@ -269,8 +269,19 @@ func (c *Client) callVerify(ctx context.Context, path string, reqBody, respBody 
 			lastErr = ErrUpstreamUnavailable
 			continue
 		default:
+			// Non-actionable 4xx (e.g. 403/404/429): the token is not
+			// proven invalid — the server gave us a transport-shaped
+			// rejection. yujiawei round-5 P2-2 review: mapping these
+			// to ErrTokenInvalid plus negative-caching for the full
+			// CacheTTL meant a transient 429 (rate-limit) or 404
+			// (proxy/gateway route rollout) poisoned the token for up
+			// to 60s. Bucket as upstream-unavailable so callers fail
+			// closed on this request but the next call re-tries (the
+			// VerifyUser/VerifyBot/VerifyAPIKey wrappers don't cache
+			// ErrUpstreamUnavailable — only ErrTokenInvalid).
 			c.col.ObserveUpstreamError(extractKindFromPath(path), "4xx_client")
-			return ErrTokenInvalid
+			lastErr = ErrUpstreamUnavailable
+			continue
 		}
 	}
 	if lastErr == nil {

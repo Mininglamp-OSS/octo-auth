@@ -291,30 +291,48 @@ func injectBotContext(ctx *gin.Context, r *contract.VerifyBotResp) {
 	if r.SpaceID != "" {
 		ctx.Set(CtxKeySpaceID, r.SpaceID)
 	}
-	// yujiawei P0 review on octo-auth#2: VerifyBotResp lacks a
-	// ContextIncluded field, so RequireSpaceMember was a silent
-	// no-op for all bot principals. For space-scoped bots
-	// (Scope="space"), the server-verified SpaceID is the
-	// authoritative binding — populate the same SDK-context keys
-	// the user path uses so RequireSpaceMember enforces against
-	// {r.SpaceID} as the only allowed space.
+	// yujiawei P0 review on octo-auth#2 (across rounds 1, 5, 6).
 	//
-	// OctoBoooot round-4 P0 (carried into round-5): if octo-server
-	// returns Scope="space" but SpaceID="" (a contract violation,
-	// not a legal value), the prior revision only set the keys
-	// inside the `if r.SpaceID != ""` outer guard, so a
-	// contract-violating response left CtxKeyContextIncluded unset
-	// and RequireSpaceMember fell into the compat-pass branch —
-	// accepting any X-Space-Id. Fail closed here instead: set
-	// CtxKeyContextIncluded=true with an empty verified-spaces list,
-	// guaranteeing RequireSpaceMember 403s on any non-empty
-	// X-Space-Id rather than silently allowing cross-space access.
-	// Platform-scope bots are unaffected; they stay context-uncommitted.
-	if r.Scope == "space" {
-		ctx.Set(CtxKeyContextIncluded, true)
-		if r.SpaceID != "" {
-			ctx.Set(CtxKeyVerifiedSpaces, []string{r.SpaceID})
-		} else {
+	// RequireSpaceMember enforces only when CtxKeyContextIncluded=true.
+	// VerifyBotResp has no top-level ContextIncluded field, so the bot
+	// path must derive the flag from the bot principal's binding shape.
+	// Three converging cases — each fail-closed:
+	//
+	//   1. App Bot with Scope="space": SpaceID is the authoritative
+	//      single-space binding. Set verified-spaces=[SpaceID] when
+	//      SpaceID is non-empty; otherwise (contract violation) set
+	//      verified-spaces=[] so any non-empty X-Space-Id 403s rather
+	//      than silently allowing cross-space access (round-4 fix).
+	//
+	//   2. App Bot with Scope="platform": no per-space binding;
+	//      stays context-uncomitted (compat-pass at RequireSpaceMember).
+	//
+	//   3. App Bot with missing/unknown Scope (round-6: yujiawei P1-1
+	//      identified that BotKind="app" with omitted scope let the
+	//      X-Space-Id override branch treat the binding as
+	//      non-authoritative and accept any client-supplied space).
+	//      Treat as a contract violation: an App Bot MUST declare its
+	//      scope. Fail-closed with verified-spaces=[] for the same
+	//      reason as case 1.
+	//
+	//   4. User Bot (BotKind="user"): no scope/binding concept;
+	//      context-uncomitted. Cross-space routing decisions remain
+	//      with the owner's session via the X-Space-Id display hint.
+	if r.BotKind == "app" {
+		switch r.Scope {
+		case "space":
+			ctx.Set(CtxKeyContextIncluded, true)
+			if r.SpaceID != "" {
+				ctx.Set(CtxKeyVerifiedSpaces, []string{r.SpaceID})
+			} else {
+				ctx.Set(CtxKeyVerifiedSpaces, []string{})
+			}
+		case "platform":
+			// Cross-space-capable bot; do not pin verified-spaces.
+		default:
+			// Missing or unknown scope on an App Bot is a contract
+			// violation. Fail-closed.
+			ctx.Set(CtxKeyContextIncluded, true)
 			ctx.Set(CtxKeyVerifiedSpaces, []string{})
 		}
 	}

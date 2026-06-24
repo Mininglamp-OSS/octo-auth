@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/Mininglamp-OSS/octo-auth/sdk-go/contract"
@@ -170,4 +171,71 @@ func TestNewServerURLRequired(t *testing.T) {
 	if _, err := New(Options{}); err == nil {
 		t.Fatal("expected error for empty ServerURL")
 	}
+}
+
+// TestClientVerifyUser4xxNotPoisonedInCache pins yujiawei round-5
+// P2-2 on octo-auth#2: a transient 429 (rate-limit) or 404 (proxy
+// rollout) used to map to ErrTokenInvalid and stick in the negative
+// cache for up to CacheTTL (60s default), so a valid token would
+// 401 for a minute after one bad upstream blip. Round-6 buckets
+// those as ErrUpstreamUnavailable, which is NOT negative-cached;
+// the next call retries the upstream.
+func TestClientVerifyUser4xxNotPoisonedInCache(t *testing.T) {
+	t.Parallel()
+	var hits int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/verify", func(w http.ResponseWriter, _ *http.Request) {
+		// First call: simulate 429 rate-limit from a gateway proxy.
+		// Second call: token is genuinely valid — must NOT come back
+		// First 2 calls: simulate sustained 429 rate-limit from a
+		// gateway proxy (more than MaxRetries=1 so the retry path
+		// also returns 429, exhausting retries → ErrUpstreamUnavailable).
+		// Third call (the user retry): token is genuinely valid —
+		// must NOT come back as ErrTokenInvalid from a poisoned
+		// cache entry.
+		atomicInc(&hits)
+		if loadInt32(&hits) <= 2 {
+			http.Error(w, `{"error":{"code":"RATE_LIMITED","message":"slow down"}}`, http.StatusTooManyRequests)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(contract.VerifyUserResp{
+			SchemaVersion: 1, Kind: "user", UID: "u1", Name: "Alice",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL, MaxRetries: 1})
+
+	// First call: expect ErrUpstreamUnavailable, NOT ErrTokenInvalid.
+	_, err := c.VerifyUser(context.Background(), "tok-X", false)
+	if err == nil || !errors.Is(err, ErrUpstreamUnavailable) {
+		t.Fatalf("first call: want ErrUpstreamUnavailable on 429, got %v", err)
+	}
+
+	// Second call: must succeed (cache did NOT poison the token).
+	resp, err := c.VerifyUser(context.Background(), "tok-X", false)
+	if err != nil {
+		t.Fatalf("second call must succeed (cache poisoning), got %v", err)
+	}
+	if resp.UID != "u1" {
+		t.Fatalf("got UID=%q want u1", resp.UID)
+	}
+}
+
+// atomicInc/loadInt32 — tiny helpers to keep the test self-contained
+// without pulling sync/atomic imports into the test file's main package.
+// Using local vars + a mutex would also work; mutex omitted because the
+// httptest server serializes each handler invocation per connection,
+// and we make sequential calls.
+var int32Lock sync.Mutex
+
+func atomicInc(p *int32) {
+	int32Lock.Lock()
+	defer int32Lock.Unlock()
+	*p++
+}
+func loadInt32(p *int32) int32 {
+	int32Lock.Lock()
+	defer int32Lock.Unlock()
+	return *p
 }
