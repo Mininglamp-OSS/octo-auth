@@ -107,7 +107,7 @@ func TestClientVerifyBotAppUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = c.VerifyBot(context.Background(), "app_x")
+	_, err = c.VerifyBot(context.Background(), "app_test_app_bot_token_value_here")
 	if !errors.Is(err, ErrBotUnavailable) {
 		t.Fatalf("want ErrBotUnavailable, got %v", err)
 	}

@@ -318,7 +318,13 @@ func injectBotContext(ctx *gin.Context, r *contract.VerifyBotResp) {
 	//   4. User Bot (BotKind="user"): no scope/binding concept;
 	//      context-uncomitted. Cross-space routing decisions remain
 	//      with the owner's session via the X-Space-Id display hint.
-	if r.BotKind == "app" {
+	// yujiawei round-6 P1: gate on r.BotKind via explicit switch so an
+	// unknown / empty bot_kind (server-side contract violation) fails
+	// closed rather than silently degrading to user-bot semantics with
+	// the X-Space-Id override branch treating the binding as
+	// non-authoritative. Mirrors the round-6 missing-scope fix.
+	switch r.BotKind {
+	case "app":
 		switch r.Scope {
 		case "space":
 			ctx.Set(CtxKeyContextIncluded, true)
@@ -335,6 +341,16 @@ func injectBotContext(ctx *gin.Context, r *contract.VerifyBotResp) {
 			ctx.Set(CtxKeyContextIncluded, true)
 			ctx.Set(CtxKeyVerifiedSpaces, []string{})
 		}
+	case "user":
+		// User Bot: no scope/binding concept; cross-space routing
+		// decisions remain with the owner's session via the X-Space-Id
+		// display hint. Context-uncomitted.
+	default:
+		// Empty / unknown bot_kind is a contract violation. Fail-closed
+		// so RequireSpaceMember 403s any non-empty X-Space-Id rather
+		// than silently allowing cross-space access.
+		ctx.Set(CtxKeyContextIncluded, true)
+		ctx.Set(CtxKeyVerifiedSpaces, []string{})
 	}
 	// related_uids = [self, owner]
 	rel := []string{r.BotUID}
@@ -349,6 +365,20 @@ func injectAPIKeyContext(ctx *gin.Context, r *contract.VerifyAPIKeyResp) {
 	ctx.Set(CtxKeyAuthKind, AuthKindAPIKey)
 	if r.SpaceID != "" {
 		ctx.Set(CtxKeySpaceID, r.SpaceID)
+		// yujiawei round-6 P1: a bound space_id is an authoritative
+		// space-membership signal regardless of context_included. The
+		// prior revision only set CtxKeyContextIncluded inside the
+		// `if r.ContextIncluded` branch, so a compat-mode server
+		// (returning a bound space_id WITHOUT context_included=true)
+		// left the binding non-authoritative and a client-supplied
+		// X-Space-Id could overwrite it via the override guard in
+		// Middleware. The bot path already fail-closes this class
+		// (Scope=space + ContextIncluded synthesis); mirror it here.
+		// When r.ContextIncluded=true the union below extends the
+		// verified set to OwnedBotsBySpace too; when false the bound
+		// space is the only verified one.
+		ctx.Set(CtxKeyContextIncluded, true)
+		ctx.Set(CtxKeyVerifiedSpaces, []string{r.SpaceID})
 	}
 	if r.ContextIncluded {
 		ctx.Set(CtxKeyContextIncluded, true)

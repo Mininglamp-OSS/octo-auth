@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -455,5 +457,160 @@ func TestRequireSpaceMemberAppBotPlatformScopeAccepts(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("Platform App Bot MUST cross spaces; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestClientVerifyBotRejectsUnprefixedToken pins Jerry-Xin round-6 P0:
+// Client.VerifyBot must enforce the bf_/app_ prefix the contract
+// promises, not just the middleware. Prior to round-7 a service
+// calling Client.VerifyBot directly with an unprefixed token would
+// round-trip to upstream and pick up whatever legacy behavior the
+// server had — bypassing the documented security boundary.
+func TestClientVerifyBotRejectsUnprefixedToken(t *testing.T) {
+	t.Parallel()
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{SchemaVersion: 1})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+	_, err := c.VerifyBot(context.Background(), "no-prefix-token-from-direct-caller")
+	if err == nil || !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("Client.VerifyBot with unprefixed token MUST return ErrTokenInvalid client-side, got %v", err)
+	}
+	if called {
+		t.Errorf("unprefixed token must not reach upstream; the mock was called")
+	}
+}
+
+// TestClientVerifyAPIKeyRejectsUnprefixedToken pins the analogous
+// uk_ prefix check on the API-key path.
+func TestClientVerifyAPIKeyRejectsUnprefixedToken(t *testing.T) {
+	t.Parallel()
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_ = json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{SchemaVersion: 1})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+	_, err := c.VerifyAPIKey(context.Background(), "session-shaped-token-no-uk-prefix-here", false)
+	if err == nil || !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("Client.VerifyAPIKey with non-uk_ token MUST return ErrTokenInvalid client-side, got %v", err)
+	}
+	if called {
+		t.Errorf("non-uk_ token must not reach upstream; the mock was called")
+	}
+}
+
+// TestClientVerifyReturnsDeepCopyNotCachedPointer pins Jerry-Xin
+// round-6 P0: the cache stores the canonical entry but callers must
+// receive a fresh clone. Without this, a handler that mutates
+// resp.Spaces / resp.OwnedBotsBySpace silently corrupts the cache
+// for every later request using the same token, and concurrent
+// mutation races with middleware authorization checks.
+func TestClientVerifyReturnsDeepCopyNotCachedPointer(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyUserResp{
+			SchemaVersion:    1, Kind: "user", UID: "u1", Name: "A", Role: "admin",
+			ContextIncluded:  true,
+			Spaces:           []string{"sp_a", "sp_b"},
+			OwnedBotsBySpace: map[string][]string{"sp_a": {"b1", "b2"}},
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	first, err := c.VerifyUser(context.Background(), "session-token-x", true)
+	if err != nil {
+		t.Fatalf("first verify: %v", err)
+	}
+	// Mutate the slice/map of the first response.
+	first.Spaces[0] = "MUTATED"
+	first.OwnedBotsBySpace["sp_a"][0] = "MUTATED"
+	first.OwnedBotsBySpace["sp_evil"] = []string{"injected"}
+
+	// Second verify must come from the cache and must not show the mutation.
+	second, err := c.VerifyUser(context.Background(), "session-token-x", true)
+	if err != nil {
+		t.Fatalf("second verify: %v", err)
+	}
+	if second.Spaces[0] != "sp_a" {
+		t.Errorf("cache poisoned: Spaces[0]=%q, want sp_a", second.Spaces[0])
+	}
+	if second.OwnedBotsBySpace["sp_a"][0] != "b1" {
+		t.Errorf("cache poisoned: OwnedBotsBySpace[sp_a][0]=%q, want b1", second.OwnedBotsBySpace["sp_a"][0])
+	}
+	if _, ok := second.OwnedBotsBySpace["sp_evil"]; ok {
+		t.Errorf("cache poisoned: injected sp_evil key visible on second verify")
+	}
+}
+
+// TestRequireSpaceMemberAPIKeyBoundSpace_CompatNoContext pins yujiawei
+// round-6 P1: in the pre-v1 compatibility window an octo-server
+// returning a bound space_id WITHOUT context_included=true used to
+// leave CtxKeyContextIncluded unset, so the X-Space-Id override branch
+// in Middleware treated the binding as non-authoritative and accepted
+// any client-supplied space. Round-7 treats a non-empty bound SpaceID
+// as authoritative regardless of context_included.
+func TestRequireSpaceMemberAPIKeyBoundSpace_CompatNoContext(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+			SchemaVersion: 1, Kind: "apikey",
+			UID: "u_owner", KeyID: "k1",
+			SpaceID:         "sp_bound",
+			ContextIncluded: false, // compat mode: no spaces[] / owned_bots_by_space{}
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeDaemon), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	apiKey := "uk_" + "k1234567890123456789012345678901"
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Space-Id", "sp_attacker_chose")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("API key bound to sp_bound in compat mode MUST 403 a non-matching X-Space-Id; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestRequireSpaceMemberBotKindUnknownFailClosed pins yujiawei
+// round-6 P1: bot_kind outside {user, app} is a contract violation
+// and must fail-closed instead of silently degrading to "no binding"
+// semantics that accept any X-Space-Id.
+func TestRequireSpaceMemberBotKindUnknownFailClosed(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind:  "WAT", // contract violation: not user/app
+			Scope:    "space",
+			SpaceID:  "sp_A",
+			OwnerUID: "u1",
+		})
+	}))
+	defer srv.Close()
+	c, _ := New(Options{ServerURL: srv.URL})
+
+	r := gin.New()
+	r.Use(c.Middleware(ScopeBot), c.RequireSpaceMember())
+	r.GET("/x", func(ctx *gin.Context) { ctx.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer bf_test_bot_father_token_value_here")
+	req.Header.Set("X-Space-Id", "sp_attacker_chose")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("bot with unknown bot_kind + non-empty X-Space-Id MUST 403 (fail-closed); got %d (body: %s)", w.Code, w.Body.String())
 	}
 }

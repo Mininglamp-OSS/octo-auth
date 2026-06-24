@@ -115,6 +115,12 @@ func (h collectorHook) ObserveCacheHit(kind string)     { h.c.ObserveCacheHit(ki
 func (h collectorHook) ObserveCacheEvict(reason string) { h.c.ObserveCacheEvict(reason) }
 
 // VerifyUser verifies a user session token.
+//
+// Returns a deep copy of the response (Jerry-Xin round-6 P0):
+// the cache stores the canonical entry; callers receive a fresh
+// clone so any in-place mutation of OwnedBots/Spaces/OwnedBotsBySpace
+// can't corrupt later cache hits or race with concurrent middleware
+// reads.
 func (c *Client) VerifyUser(ctx context.Context, token string, includeContext bool) (*contract.VerifyUserResp, error) {
 	const kind = "user"
 	if entry, ok := c.cache.Get(kind, token, includeContext); ok {
@@ -122,7 +128,7 @@ func (c *Client) VerifyUser(ctx context.Context, token string, includeContext bo
 		if entry.ResultErr != nil {
 			return nil, entry.ResultErr
 		}
-		return entry.UserResp.(*contract.VerifyUserResp), nil
+		return cloneUserResp(entry.UserResp.(*contract.VerifyUserResp)), nil
 	}
 
 	req := contract.VerifyUserReq{Token: token}
@@ -142,21 +148,34 @@ func (c *Client) VerifyUser(ctx context.Context, token string, includeContext bo
 		return nil, err
 	}
 	c.cache.Set(kind, token, includeContext, &cachedIdentity{UserResp: &resp})
-	return &resp, nil
+	return cloneUserResp(&resp), nil
 }
 
 // VerifyBot verifies a bot token (bf_ for User Bot, app_ for App Bot).
 // Bot verify does not take an includeContext flag — the bot response
 // shape is fixed at the contract level — so cache uses includeContext=false
 // consistently for the bot kind.
+//
+// Jerry-Xin round-6 P0: the contract (auth-v1.yaml verify-bot
+// endpoint) says bot tokens MUST be bf_/app_ prefixed and unprefixed
+// tokens are rejected at the SDK layer. Earlier rounds enforced this
+// only in the Gin middleware (via kindFromPrefix); a service calling
+// Client.VerifyBot directly bypassed the security boundary. Validate
+// here too so the contract claim is upheld for every entry point.
 func (c *Client) VerifyBot(ctx context.Context, botToken string) (*contract.VerifyBotResp, error) {
 	const kind = "bot"
+	if !strings.HasPrefix(botToken, prefixBotFather) && !strings.HasPrefix(botToken, prefixAppBot) {
+		return nil, ErrTokenInvalid
+	}
+	if len(botToken) < minBotTokenLen {
+		return nil, ErrTokenInvalid
+	}
 	if entry, ok := c.cache.Get(kind, botToken, false); ok {
 		c.col.ObserveVerify(kind, "cache_hit", 0)
 		if entry.ResultErr != nil {
 			return nil, entry.ResultErr
 		}
-		return entry.BotResp.(*contract.VerifyBotResp), nil
+		return cloneBotResp(entry.BotResp.(*contract.VerifyBotResp)), nil
 	}
 
 	start := time.Now()
@@ -175,18 +194,27 @@ func (c *Client) VerifyBot(ctx context.Context, botToken string) (*contract.Veri
 		return nil, err
 	}
 	c.cache.Set(kind, botToken, false, &cachedIdentity{BotResp: &resp})
-	return &resp, nil
+	return cloneBotResp(&resp), nil
 }
 
 // VerifyAPIKey verifies a uk_ API key.
+//
+// Jerry-Xin round-6 P0: enforce the contract's uk_ prefix at the
+// Client method too — see VerifyBot's commentary for the rationale.
 func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string, includeContext bool) (*contract.VerifyAPIKeyResp, error) {
 	const kind = "apikey"
+	if !strings.HasPrefix(apiKey, prefixAPIKey) {
+		return nil, ErrTokenInvalid
+	}
+	if len(apiKey) < minAPIKeyLen {
+		return nil, ErrTokenInvalid
+	}
 	if entry, ok := c.cache.Get(kind, apiKey, includeContext); ok {
 		c.col.ObserveVerify(kind, "cache_hit", 0)
 		if entry.ResultErr != nil {
 			return nil, entry.ResultErr
 		}
-		return entry.APIKeyResp.(*contract.VerifyAPIKeyResp), nil
+		return cloneAPIKeyResp(entry.APIKeyResp.(*contract.VerifyAPIKeyResp)), nil
 	}
 
 	req := contract.VerifyAPIKeyReq{APIKey: apiKey}
@@ -204,8 +232,15 @@ func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string, includeContext
 		return nil, err
 	}
 	c.cache.Set(kind, apiKey, includeContext, &cachedIdentity{APIKeyResp: &resp})
-	return &resp, nil
+	return cloneAPIKeyResp(&resp), nil
 }
+
+// maxVerifyRespBytes caps the auth-path response body read so a
+// misbehaving or compromised verify endpoint cannot drive unbounded
+// allocation. yujiawei round-6 P2: a multi-MB response on the auth
+// hot path could exhaust the process. Verify envelopes are small;
+// 1 MiB is generous.
+const maxVerifyRespBytes = 1 << 20
 
 // callVerify does the HTTP round-trip + retry on idempotent 5xx +
 // response decode. Maps octo-server status codes to sentinel errors.
@@ -233,28 +268,68 @@ func (c *Client) callVerify(ctx context.Context, path string, reqBody, respBody 
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			// Timeout / network — bucket as "timeout"
+			// yujiawei round-6 P2: branch on caller ctx cancel/deadline
+			// so client disconnects don't spike the upstream-timeout
+			// metric and trigger false octo-server alerts. Caller-
+			// canceled errors short-circuit the retry loop (no point
+			// retrying a request the caller has abandoned).
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return ctx.Err()
+			}
 			c.col.ObserveUpstreamError(extractKindFromPath(path), "timeout")
 			lastErr = fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
 			continue
 		}
-		respBytes, _ := io.ReadAll(resp.Body)
+		// yujiawei round-6 P2: cap the read with io.LimitReader, and
+		// surface a read error as a retryable upstream blip instead
+		// of falling through to json.Unmarshal which produces a
+		// non-retryable terminal decode error and misattributes a
+		// transient network hiccup as a contract violation.
+		respBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxVerifyRespBytes+1))
 		_ = resp.Body.Close()
+		if readErr != nil {
+			c.col.ObserveUpstreamError(extractKindFromPath(path), "timeout")
+			lastErr = fmt.Errorf("%w: read body: %v", ErrUpstreamUnavailable, readErr)
+			continue
+		}
+		if len(respBytes) > maxVerifyRespBytes {
+			c.col.ObserveUpstreamError(extractKindFromPath(path), "5xx_server")
+			lastErr = fmt.Errorf("%w: response exceeds %d bytes", ErrUpstreamUnavailable, maxVerifyRespBytes)
+			continue
+		}
 
 		switch {
 		case resp.StatusCode >= 200 && resp.StatusCode < 300:
 			if err := json.Unmarshal(respBytes, respBody); err != nil {
-				return fmt.Errorf("octoauth: decode response: %w", err)
+				// yujiawei round-6 P2: a malformed 2xx body is a
+				// server/contract failure, not a bad credential. Map
+				// to ErrUpstreamUnavailable (which the wrappers don't
+				// negative-cache) instead of letting writeError pin
+				// it to AUTH_TOKEN_INVALID via the default branch.
+				c.col.ObserveUpstreamError(extractKindFromPath(path), "5xx_server")
+				return fmt.Errorf("%w: decode response: %v", ErrUpstreamUnavailable, err)
 			}
 			return nil
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusBadRequest:
-			// 401 and 400 are both treated as "token invalid" — octo-server
-			// pins httperr.ResponseErrorL to 400 by default (legacy
-			// D14 compatibility per CLAUDE.md) with the real intended
-			// status in error.http_status. Decode the envelope if present
-			// to surface bot-unavailable correctly.
-			if env := decodeErrorEnvelope(respBytes); env != nil && env.Error.Code == CodeBotUnavailable {
-				return ErrBotUnavailable
+			// 401 and 400 are both candidates for "token invalid" because
+			// octo-server pins httperr.ResponseErrorL to 400 by default
+			// (legacy D14 compat per CLAUDE.md) with the real intended
+			// status in error.http_status. Decode the envelope and:
+			//   - if Error.Code is AUTH_BOT_UNAVAILABLE → ErrBotUnavailable.
+			//   - if HTTPStatus is set and isn't 401, treat as upstream
+			//     unavailable (a transient 4xx pinned to 400 should not
+			//     poison the negative cache — yujiawei round-6 P2).
+			//   - otherwise (genuine 401 or 400 without http_status) →
+			//     ErrTokenInvalid.
+			if env := decodeErrorEnvelope(respBytes); env != nil {
+				if env.Error.Code == CodeBotUnavailable {
+					return ErrBotUnavailable
+				}
+				if env.Error.HTTPStatus != 0 && env.Error.HTTPStatus != http.StatusUnauthorized && env.Error.HTTPStatus != http.StatusBadRequest {
+					c.col.ObserveUpstreamError(extractKindFromPath(path), "4xx_client")
+					lastErr = ErrUpstreamUnavailable
+					continue
+				}
 			}
 			return ErrTokenInvalid
 		case resp.StatusCode == http.StatusServiceUnavailable:
@@ -328,4 +403,64 @@ func extractKindFromPath(path string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// cloneUserResp / cloneBotResp / cloneAPIKeyResp return deep copies of
+// the response DTOs so cached pointers are never shared with callers.
+// Jerry-Xin round-6 P0 on octo-auth#2: returning the cached pointer
+// directly let any direct SDK caller (or context-injected handler)
+// mutate the slice/map fields and silently corrupt the cache entry
+// for every subsequent request using the same token. The middleware
+// already does its own defensive copy at the context accessors
+// (yujiawei round-5 P2-3), but the Client methods are the public
+// SDK surface and must be safe on their own.
+func cloneUserResp(in *contract.VerifyUserResp) *contract.VerifyUserResp {
+	if in == nil {
+		return nil
+	}
+	out := *in // shallow copy of scalar fields
+	out.Spaces = cloneStringSlice(in.Spaces)
+	out.OwnedBotsBySpace = cloneStringSliceMap(in.OwnedBotsBySpace)
+	if len(in.OwnedBots) > 0 {
+		out.OwnedBots = make([]contract.OwnedBot, len(in.OwnedBots))
+		copy(out.OwnedBots, in.OwnedBots) // OwnedBot is a struct of scalars
+	}
+	return &out
+}
+
+func cloneBotResp(in *contract.VerifyBotResp) *contract.VerifyBotResp {
+	if in == nil {
+		return nil
+	}
+	out := *in // VerifyBotResp is all scalar fields
+	return &out
+}
+
+func cloneAPIKeyResp(in *contract.VerifyAPIKeyResp) *contract.VerifyAPIKeyResp {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.OwnedBotsBySpace = cloneStringSliceMap(in.OwnedBotsBySpace)
+	return &out
+}
+
+func cloneStringSlice(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneStringSliceMap(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for k, v := range in {
+		out[k] = cloneStringSlice(v)
+	}
+	return out
 }
