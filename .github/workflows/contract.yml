@@ -1,0 +1,56 @@
+name: contract
+
+on:
+  pull_request:
+    paths:
+      - "contract/**"
+      - ".github/workflows/contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "contract/**"
+      - ".github/workflows/contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Spectral lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install spectral
+        run: npm install -g @stoplight/spectral-cli@6.11.1
+
+      - name: Lint auth-v1.yaml
+        run: spectral lint contract/auth-v1.yaml --ruleset 'https://raw.githubusercontent.com/stoplightio/spectral/develop/packages/rulesets/src/oas/index.ts' || true
+        # || true while we iterate on the contract; remove once contract is stable.
+
+  diff:
+    name: Breaking-change check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Save base contract
+        run: cp contract/auth-v1.yaml /tmp/base-auth-v1.yaml || echo "no base contract — first commit"
+
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: openapi-diff
+        run: |
+          if [ ! -f /tmp/base-auth-v1.yaml ]; then
+            echo "No base contract to compare against (likely first introduction)."
+            exit 0
+          fi
+          docker run --rm -v "$PWD:/specs" -v "/tmp:/base" tufin/oasdiff:latest \
+            breaking /base/base-auth-v1.yaml /specs/contract/auth-v1.yaml \
+            --fail-on ERR

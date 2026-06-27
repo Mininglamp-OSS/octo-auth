@@ -1,0 +1,53 @@
+name: release
+
+# Lightweight release helper. Push a tag matching one of the allowed
+# prefixes to trigger; the workflow validates the tag prefix and
+# (for sdk-go) confirms the SDK builds & tests cleanly from the tagged
+# commit before posting a GitHub Release.
+
+on:
+  push:
+    tags:
+      - "sdk-go/v*"
+      - "sdk-ts/v*"
+      - "sdk-py/v*"
+      - "contract/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag prefix
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          case "$tag" in
+            sdk-go/v*|sdk-ts/v*|sdk-py/v*|contract/v*) ;;
+            *) echo "::error::tag $tag does not match allowed prefix"; exit 1 ;;
+          esac
+          echo "TAG_PREFIX=${tag%/*}" >>"$GITHUB_ENV"
+          echo "TAG_VERSION=${tag#*/}" >>"$GITHUB_ENV"
+
+      - name: Verify sdk-go (when sdk-go/* tag)
+        if: startsWith(github.ref, 'refs/tags/sdk-go/')
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: sdk-go/go.sum
+
+      - name: sdk-go build + test
+        if: startsWith(github.ref, 'refs/tags/sdk-go/')
+        working-directory: sdk-go
+        run: |
+          go build ./...
+          go test -race -shuffle=on -count=1 -timeout 5m ./...
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: ${{ env.TAG_PREFIX }} ${{ env.TAG_VERSION }}
