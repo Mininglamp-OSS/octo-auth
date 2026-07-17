@@ -137,14 +137,16 @@ func TestBotVerifierCacheKeyPrefix(t *testing.T) {
 	_, err := v.Verify(context.Background(), tok)
 	require.NoError(t, err)
 
-	// Positive key must exist under b: prefix.
-	posKey := "b:" + HashCacheKey(tok)
+	// Positive key must exist under b:c: prefix (bot ignores include=context
+	// but the flag is still folded into the key for uniform layout; testConfig
+	// defaults RequestIncludeContext=true → tag "c:").
+	posKey := "b:c:" + HashCacheKey(tok)
 	val, ok := cfg.Cache.Get(context.Background(), posKey)
 	require.True(t, ok)
 	require.NotNil(t, val)
 
 	// Session/apikey prefixes must NOT have this key.
-	_, ok = cfg.Cache.Get(context.Background(), "s:"+HashCacheKey(tok))
+	_, ok = cfg.Cache.Get(context.Background(), "s:c:"+HashCacheKey(tok))
 	assert.False(t, ok)
 }
 

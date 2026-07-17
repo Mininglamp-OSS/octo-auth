@@ -94,7 +94,19 @@ func applyDefaults(cfg *Config) {
 		panic("octoauth: Config must not be nil")
 	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: DefaultHTTPTimeout}
+		// CheckRedirect returns http.ErrUseLastResponse so the client stops
+		// at the first 3xx and surfaces it as an "unexpected status" =>
+		// InfraFailure. Blindly following a 307/308 would replay the POST
+		// body — which for verify calls contains the raw credential
+		// (`{"token":"..."}`, `bf_...`, `uk_...`) — to a Location target
+		// controlled by an attacker or a misconfigured reverse proxy.
+		// Reviewer P1-B.
+		cfg.HTTPClient = &http.Client{
+			Timeout: DefaultHTTPTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 	if cfg.Cache == nil {
 		cfg.Cache = NewLRUCache(DefaultLRUCacheSize)
@@ -108,16 +120,20 @@ func applyDefaults(cfg *Config) {
 	if cfg.ErrorMapper == nil {
 		cfg.ErrorMapper = DefaultErrorMapper
 	}
-	if cfg.SessionTTL == 0 {
+	// TTL fields: undefined (zero) OR negative → default. Coercing negatives
+	// matches the TS SDK's applyDefaults and prevents a miscalculated
+	// negative duration from producing a permanent auth cache (cache.Set
+	// treats ttl <= 0 as "no expiry" — see go/cache.go). Reviewer P1-D.
+	if cfg.SessionTTL <= 0 {
 		cfg.SessionTTL = DefaultSessionTTL
 	}
-	if cfg.BotTTL == 0 {
+	if cfg.BotTTL <= 0 {
 		cfg.BotTTL = DefaultBotTTL
 	}
-	if cfg.APIKeyTTL == 0 {
+	if cfg.APIKeyTTL <= 0 {
 		cfg.APIKeyTTL = DefaultAPIKeyTTL
 	}
-	if cfg.NegativeTTL == 0 {
+	if cfg.NegativeTTL <= 0 {
 		cfg.NegativeTTL = DefaultNegativeTTL
 	}
 	if cfg.RequestIncludeContext == nil {

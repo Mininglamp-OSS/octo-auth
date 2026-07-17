@@ -99,6 +99,41 @@ func TestApplyDefaultsPanicsOnNil(t *testing.T) {
 	assert.Panics(t, func() { applyDefaults(nil) })
 }
 
+// TestApplyDefaultsCoercesNegativeTTL guards reviewer P1-D: a miscalculated
+// negative duration (e.g. SessionTTL: -1*time.Hour) MUST be coerced to the
+// documented default. Without this coercion the value flows through to
+// cache.Set, which treats ttl <= 0 as "no expiry" — permanent auth cache,
+// unbounded SSO-revocation window.
+func TestApplyDefaultsCoercesNegativeTTL(t *testing.T) {
+	cfg := &Config{
+		BaseURL:     "http://example.com",
+		SessionTTL:  -1 * time.Second,
+		BotTTL:      -1 * time.Hour,
+		APIKeyTTL:   -42 * time.Millisecond,
+		NegativeTTL: -1 * time.Nanosecond,
+	}
+	applyDefaults(cfg)
+
+	assert.Equal(t, DefaultSessionTTL, cfg.SessionTTL, "negative SessionTTL must coerce to default")
+	assert.Equal(t, DefaultBotTTL, cfg.BotTTL, "negative BotTTL must coerce to default")
+	assert.Equal(t, DefaultAPIKeyTTL, cfg.APIKeyTTL, "negative APIKeyTTL must coerce to default")
+	assert.Equal(t, DefaultNegativeTTL, cfg.NegativeTTL, "negative NegativeTTL must coerce to default")
+}
+
+// TestApplyDefaultsInstallsRedirectGuard guards reviewer P1-B: the default
+// HTTPClient MUST refuse to follow 3xx so a 307/308 does not replay the
+// POST body — containing raw credentials — to an attacker-controlled or
+// misconfigured Location.
+func TestApplyDefaultsInstallsRedirectGuard(t *testing.T) {
+	cfg := &Config{BaseURL: "http://example.com"}
+	applyDefaults(cfg)
+
+	require.NotNil(t, cfg.HTTPClient)
+	require.NotNil(t, cfg.HTTPClient.CheckRedirect, "default client MUST have CheckRedirect set")
+	err := cfg.HTTPClient.CheckRedirect(nil, nil)
+	assert.ErrorIs(t, err, http.ErrUseLastResponse, "CheckRedirect must return http.ErrUseLastResponse to halt redirect chain")
+}
+
 func TestDefaultErrorMapper(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -332,7 +332,7 @@ func TestSessionVerifierCacheKeyIsHashed(t *testing.T) {
 	_, err := v.Verify(context.Background(), "secret-token")
 	require.NoError(t, err)
 
-	expected := "s:" + HashCacheKey("secret-token")
+	expected := "s:c:" + HashCacheKey("secret-token")
 	val, ok := cfg.Cache.Get(context.Background(), expected)
 	require.True(t, ok, "expected cache key must be hashed")
 	require.NotNil(t, val)

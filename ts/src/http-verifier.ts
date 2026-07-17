@@ -65,6 +65,12 @@ export async function doVerifyRequest(
   try {
     resp = await cfg.fetch(url, {
       method: 'POST',
+      // Never follow 3xx: a 307/308 response would replay the POST body —
+      // which contains the raw credential (`{"token":"..."}`, `bf_...`,
+      // `uk_...`) — to an attacker-controlled or misconfigured Location.
+      // 'error' causes fetch to throw, which our catch below maps to
+      // InfraFailure. Reviewer P1-B.
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
@@ -174,7 +180,16 @@ export class VerifyContext {
     this.cfg = cfg
     this.verifier = verifier
     const base = cfg.hashCacheKey ? hashCacheKey(credential) : credential
-    this.posKey = keyPrefix + base
+    // Fold requestIncludeContext into the cache key as a "c:" / "n:"
+    // segment. Two verifier instances that share a Cache but disagree on
+    // requestIncludeContext MUST NOT cross-serve — a no-context Principal
+    // has context.kind === 'not-requested', which the enrich helper treats
+    // as a no-op, so serving it to a caller expecting 'included' would
+    // silently skip X-Space-Id membership validation. The bot verifier
+    // ignores this flag but still gets the segment for a uniform key
+    // layout. Reviewer P1-C.
+    const ctxTag = cfg.requestIncludeContext ? 'c:' : 'n:'
+    this.posKey = keyPrefix + ctxTag + base
     this.negKey = this.posKey + ':neg'
     this.ttlMs = ttlMs
     this.startMs = Date.now()

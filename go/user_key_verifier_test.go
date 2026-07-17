@@ -152,7 +152,7 @@ func TestUserKeyVerifierCachePositive(t *testing.T) {
 	assert.Equal(t, first, second, "clones must be value-equal")
 	assert.Len(t, ms.Requests(), 1)
 
-	posKey := "k:" + HashCacheKey(tok)
+	posKey := "k:c:" + HashCacheKey(tok)
 	val, ok := cfg.Cache.Get(context.Background(), posKey)
 	require.True(t, ok)
 	require.NotNil(t, val)

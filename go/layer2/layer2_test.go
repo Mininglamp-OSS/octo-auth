@@ -208,6 +208,30 @@ func TestVerifyShortLivedTokenMissingSigKey(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMissingSigKey)
 }
 
+// TestVerifyShortLivedTokenShortHS256Key ensures the verify path rejects a
+// weak HMAC secret symmetrically with the issue path. Without this guard, a
+// verify-only consumer (token issued elsewhere) configured with a < 32-byte
+// secret would silently accept the weak signature, enabling brute-force
+// forgery of any uid/role/document_name/permission_epoch. Reviewer P1-A.
+func TestVerifyShortLivedTokenShortHS256Key(t *testing.T) {
+	// Sign a token with the same short secret so the signature would
+	// otherwise verify — proves the guard fires before jwt.Parse.
+	shortKey := []byte("too-short-secret")
+	signed := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"uid": "u-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	tokenStr, err := signed.SignedString(shortKey)
+	require.NoError(t, err)
+
+	_, verr := VerifyShortLivedToken(tokenStr, VerifyOptions{
+		SigKey: shortKey,
+		SigAlg: AlgHS256,
+	})
+	require.Error(t, verr)
+	assert.ErrorIs(t, verr, ErrKeyTooShort)
+}
+
 func TestVerifyShortLivedTokenEdDSAUnsupported(t *testing.T) {
 	_, err := VerifyShortLivedToken("x.y.z", VerifyOptions{
 		SigKey: testSecret,

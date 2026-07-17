@@ -91,6 +91,103 @@ func TestDoVerifyRequestBadURL(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInfraFailure)
 }
 
+// TestDoVerifyRequestRejectsRedirect guards reviewer P1-B: the default
+// HTTPClient MUST NOT follow a 307/308, otherwise the POST body — which
+// carries the raw credential — would be replayed to the Location target.
+// The mock server returns 307 with a Location pointing to an attacker
+// endpoint; the SDK should stop at the redirect and surface it as
+// InfraFailure (unexpected status), and the attacker endpoint should
+// receive zero requests.
+func TestDoVerifyRequestRejectsRedirect(t *testing.T) {
+	attacker := testhelpers.NewMockServer(t)
+	attacker.SetResponse("/steal", http.StatusOK, `{"stolen":true}`)
+
+	victim := testhelpers.NewMockServer(t)
+	victim.SetResponseFull("/x", testhelpers.StubResponse{
+		Status: http.StatusTemporaryRedirect, // 307
+		Body:   "",
+		Headers: http.Header{
+			"Location": []string{attacker.URL() + "/steal"},
+		},
+	})
+	cfg := testConfig(victim.URL())
+
+	// A "credential-shaped" body — this is what would leak if the client
+	// followed the redirect.
+	body := map[string]string{"token": "SECRET-CRED-abc123"}
+	_, err := doVerifyRequest(context.Background(), cfg, "/x", body, KindSession)
+	require.Error(t, err)
+	var authErr *Error
+	require.ErrorAs(t, err, &authErr)
+	assert.Equal(t, ErrKindInfraFailure, authErr.Kind, "3xx must map to InfraFailure, not silently follow")
+
+	// Victim server was hit once (the initial POST); attacker server MUST NOT
+	// have been contacted.
+	assert.Len(t, victim.Requests(), 1, "victim receives the initial POST")
+	assert.Empty(t, attacker.Requests(), "attacker MUST NOT receive the redirected body — credential leak blocked")
+}
+
+// TestDoVerifyRequestRejectsPermanentRedirect covers the 308 sibling case.
+func TestDoVerifyRequestRejectsPermanentRedirect(t *testing.T) {
+	attacker := testhelpers.NewMockServer(t)
+	attacker.SetResponse("/steal", http.StatusOK, `{}`)
+
+	victim := testhelpers.NewMockServer(t)
+	victim.SetResponseFull("/x", testhelpers.StubResponse{
+		Status: http.StatusPermanentRedirect, // 308
+		Headers: http.Header{
+			"Location": []string{attacker.URL() + "/steal"},
+		},
+	})
+	cfg := testConfig(victim.URL())
+
+	_, err := doVerifyRequest(context.Background(), cfg, "/x", map[string]string{"api_key": "uk_secret"}, KindAPIKey)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInfraFailure)
+	assert.Empty(t, attacker.Requests(), "308 must also be blocked (credential leak)")
+}
+
+// TestNewVerifyContextCacheKeyEncodesIncludeContext guards reviewer P1-C:
+// two verifier instances that share a Cache but disagree on
+// RequestIncludeContext MUST produce different cache keys, otherwise a
+// no-context Principal (ContextNotRequested → enrich no-op) could be
+// served to a caller expecting ContextIncluded and silently skip
+// X-Space-Id membership validation.
+func TestNewVerifyContextCacheKeyEncodesIncludeContext(t *testing.T) {
+	cfgOn := &Config{BaseURL: "http://example.com", RequestIncludeContext: Ptr(true)}
+	cfgOff := &Config{BaseURL: "http://example.com", RequestIncludeContext: Ptr(false)}
+	applyDefaults(cfgOn)
+	applyDefaults(cfgOff)
+
+	vcOn := newVerifyContext(cfgOn, KindSession, "s:", "same-cred", cfgOn.SessionTTL)
+	vcOff := newVerifyContext(cfgOff, KindSession, "s:", "same-cred", cfgOff.SessionTTL)
+
+	assert.NotEqual(t, vcOn.posKey, vcOff.posKey, "cache keys MUST differ when RequestIncludeContext differs")
+	assert.NotEqual(t, vcOn.negKey, vcOff.negKey, "negative cache keys MUST differ too")
+	assert.Contains(t, vcOn.posKey, "s:c:", "include=context path uses 'c:' tag")
+	assert.Contains(t, vcOff.posKey, "s:n:", "no-context path uses 'n:' tag")
+
+	// Same flag setting → same key (cache correctness across process life).
+	vcOn2 := newVerifyContext(cfgOn, KindSession, "s:", "same-cred", cfgOn.SessionTTL)
+	assert.Equal(t, vcOn.posKey, vcOn2.posKey)
+}
+
+// TestNewVerifyContextCacheKeyUniformAcrossPrefixes confirms the "c:"/"n:"
+// tag is applied to bot and apikey prefixes too, keeping key layout
+// uniform even though bot ignores the flag.
+func TestNewVerifyContextCacheKeyUniformAcrossPrefixes(t *testing.T) {
+	cfg := &Config{BaseURL: "http://example.com"}
+	applyDefaults(cfg) // RequestIncludeContext defaults to Ptr(true) → "c:"
+
+	sessionKey := newVerifyContext(cfg, KindSession, "s:", "x", cfg.SessionTTL).posKey
+	botKey := newVerifyContext(cfg, KindBot, "b:", "x", cfg.BotTTL).posKey
+	apiKey := newVerifyContext(cfg, KindAPIKey, "k:", "x", cfg.APIKeyTTL).posKey
+
+	assert.True(t, strings.HasPrefix(sessionKey, "s:c:"))
+	assert.True(t, strings.HasPrefix(botKey, "b:c:"))
+	assert.True(t, strings.HasPrefix(apiKey, "k:c:"))
+}
+
 func TestDecodeVerifyResponse(t *testing.T) {
 	var out struct {
 		Foo string `json:"foo"`

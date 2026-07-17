@@ -122,6 +122,25 @@ describe('layer2 — verify validation', () => {
     ).rejects.toMatchObject({ kind: 'invalid-credential' })
   })
 
+  it('rejects short HS256 sigKey (< 32 bytes) — symmetric with issue side', async () => {
+    // Reviewer P1-A: without this guard a verify-only consumer configured
+    // with a < 32-byte secret would silently accept the resulting weak
+    // signature, enabling brute-force token forgery of any claim. Sign a
+    // token with the same short key so the signature would otherwise
+    // verify — proves the guard fires before jwtVerify.
+    const shortKey = new Uint8Array(MIN_HS256_KEY_SIZE - 1)
+    const token = await new SignJWT({ uid: 'u-1' })
+      .setProtectedHeader({ alg: AlgHS256 })
+      .setExpirationTime(Math.floor(Date.now() / 1000) + 60)
+      .sign(shortKey)
+    await expect(
+      verifyShortLivedToken(token, { sigKey: shortKey, sigAlg: AlgHS256 }),
+    ).rejects.toMatchObject({
+      kind: 'invalid-credential',
+      message: expect.stringMatching(/HS256 secret must be at least/),
+    })
+  })
+
   it('rejects EdDSA at verify time (v1 gap)', async () => {
     await expect(
       verifyShortLivedToken('anything', {

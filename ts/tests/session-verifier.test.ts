@@ -136,6 +136,52 @@ describe('sessionVerifier — error status mapping', () => {
     await expect(v.verify('t')).rejects.toMatchObject({ kind: 'infra-failure' })
   })
 
+  // Reviewer P1-B: 307/308 replay the POST body — which carries the raw
+  // credential — to the Location target. `fetch(..., { redirect: 'error' })`
+  // MUST cause the promise to reject so credentials never leave for the
+  // attacker-controlled Location.
+  it('307 redirect → infra-failure (credential leak blocked)', async () => {
+    let attackerHits = 0
+    const attacker = await startMockServer(async () => {
+      attackerHits++
+      return { status: 200, body: '{}' }
+    })
+    try {
+      handle = await startMockServer(async () => ({
+        status: 307,
+        headers: { Location: `${attacker.baseUrl}/steal` },
+      }))
+      const v = newSessionVerifier({ baseUrl: handle.baseUrl })
+      await expect(v.verify('SECRET-CRED-abc123')).rejects.toMatchObject({
+        kind: 'infra-failure',
+      })
+      expect(attackerHits).toBe(0)
+    } finally {
+      await attacker.close()
+    }
+  })
+
+  it('308 redirect → infra-failure (credential leak blocked)', async () => {
+    let attackerHits = 0
+    const attacker = await startMockServer(async () => {
+      attackerHits++
+      return { status: 200, body: '{}' }
+    })
+    try {
+      handle = await startMockServer(async () => ({
+        status: 308,
+        headers: { Location: `${attacker.baseUrl}/steal` },
+      }))
+      const v = newSessionVerifier({ baseUrl: handle.baseUrl })
+      await expect(v.verify('SECRET-CRED-abc123')).rejects.toMatchObject({
+        kind: 'infra-failure',
+      })
+      expect(attackerHits).toBe(0)
+    } finally {
+      await attacker.close()
+    }
+  })
+
   it('malformed JSON body → infra-failure (decode error)', async () => {
     handle = await startMockServer(async () => ({ status: 200, body: 'not-json' }))
     const v = newSessionVerifier({ baseUrl: handle.baseUrl })
@@ -303,11 +349,45 @@ describe('sessionVerifier — cache behavior', () => {
       requestIncludeContext: false,
     })
     await v.verify('rawtoken')
-    const g = await cache.get('s:rawtoken')
+    // Key includes the ":n:" context tag ("n" because requestIncludeContext=false).
+    const g = await cache.get('s:n:rawtoken')
     expect(g.found).toBe(true)
     // And the hashed variant is absent.
-    const g2 = await cache.get('s:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+    const g2 = await cache.get('s:n:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
     expect(g2.found).toBe(false)
+  })
+
+  // Reviewer P1-C: two verifier instances that share a Cache but disagree
+  // on requestIncludeContext MUST NOT cross-serve. If they did, the caller
+  // expecting ContextIncluded could receive a ContextNotRequested Principal
+  // and the enrich helper would silently skip X-Space-Id membership
+  // validation. Assertion: two verify() calls hit the server twice (one per
+  // instance) and the cache stores both under distinct keys.
+  it('shared cache: different requestIncludeContext → distinct cache keys, no cross-serve', async () => {
+    let hits = 0
+    handle = await startMockServer(async () => {
+      hits++
+      return { status: 200, body: JSON.stringify({ uid: 'u1' }) }
+    })
+    const shared = newLRUCache(10)
+    const vOn = newSessionVerifier({
+      baseUrl: handle.baseUrl,
+      cache: shared,
+      hashCacheKey: false,
+      requestIncludeContext: true,
+    })
+    const vOff = newSessionVerifier({
+      baseUrl: handle.baseUrl,
+      cache: shared,
+      hashCacheKey: false,
+      requestIncludeContext: false,
+    })
+    await vOn.verify('same-cred')
+    await vOff.verify('same-cred')
+    expect(hits).toBe(2)
+    // Both keys populated under distinct prefixes.
+    expect((await shared.get('s:c:same-cred')).found).toBe(true)
+    expect((await shared.get('s:n:same-cred')).found).toBe(true)
   })
 
   it('cache returning an object missing context.kind falls through as a miss', async () => {

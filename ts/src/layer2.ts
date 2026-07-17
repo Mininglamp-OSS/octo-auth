@@ -145,6 +145,17 @@ export async function verifyShortLivedToken(
       `layer2: unsupported signature algorithm (v1 supports HS256 only): "${String(opts.sigAlg)}"`,
     )
   }
+  // Symmetric with issueShortLivedToken: reject weak HMAC keys on the
+  // verify path too. A verify-only consumer (token issued elsewhere) that
+  // configures a < 32-byte secret would otherwise silently accept the
+  // resulting weak signature, enabling brute-force token forgery of any
+  // uid/role/document_name/permission_epoch.
+  if (opts.sigKey.length < MIN_HS256_KEY_SIZE) {
+    throw new OctoAuthError(
+      'invalid-credential',
+      `layer2: HS256 secret must be at least ${MIN_HS256_KEY_SIZE} bytes`,
+    )
+  }
   let payload: Record<string, unknown>
   try {
     // Alg-confusion defense: only HS256 is accepted; jose also rejects

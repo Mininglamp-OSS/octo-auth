@@ -184,12 +184,26 @@ type verifyContext struct {
 
 // newVerifyContext builds a verifyContext for the given verifier / credential.
 // keyPrefix is one of "s:" / "b:" / "k:" per design doc §6.
+//
+// The resolved [Config.RequestIncludeContext] flag is folded into the cache
+// key as a "c:" (include=context) or "n:" (no context) segment. This
+// prevents two verifier instances that share a Cache but disagree on
+// RequestIncludeContext from cross-serving each other's Principals — a
+// no-context Principal has [ContextNotRequested], which the enrich helper
+// treats as a no-op, so serving it to a caller expecting [ContextIncluded]
+// would silently skip X-Space-Id membership validation. The bot verifier
+// ignores RequestIncludeContext but still gets the segment for a uniform
+// key layout. Reviewer P1-C.
 func newVerifyContext(cfg *Config, verifier PrincipalKind, keyPrefix, credential string, ttl time.Duration) verifyContext {
 	base := credential
 	if cfg.HashCacheKey != nil && *cfg.HashCacheKey {
 		base = HashCacheKey(credential)
 	}
-	pos := keyPrefix + base
+	ctxTag := "n:"
+	if cfg.RequestIncludeContext != nil && *cfg.RequestIncludeContext {
+		ctxTag = "c:"
+	}
+	pos := keyPrefix + ctxTag + base
 	return verifyContext{
 		cfg:      cfg,
 		verifier: verifier,

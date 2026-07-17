@@ -127,6 +127,10 @@ func IssueShortLivedToken(opts IssueOptions) (string, error) {
 //
 // Errors:
 //   - [ErrMissingSigKey] when SigKey is nil / empty
+//   - [ErrKeyTooShort] when HS256 SigKey is under MinHS256KeySize —
+//     symmetric with [IssueShortLivedToken] so a verify-only consumer
+//     cannot silently accept a weak HMAC secret that would enable token
+//     forgery via brute-force.
 //   - [ErrUnsupportedAlgorithm] when SigAlg is EdDSA or unknown
 //   - [ErrTokenExpired] when the exp claim is in the past
 //   - [ErrTokenInvalid] for signature-mismatch, tampered payload,
@@ -139,7 +143,9 @@ func VerifyShortLivedToken(tokenStr string, opts VerifyOptions) (*ShortLivedClai
 	}
 	switch opts.SigAlg {
 	case AlgHS256:
-		// OK
+		if len(opts.SigKey) < MinHS256KeySize {
+			return nil, ErrKeyTooShort
+		}
 	case AlgEdDSA:
 		return nil, ErrUnsupportedAlgorithm
 	default:
