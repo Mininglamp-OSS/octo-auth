@@ -1,0 +1,50 @@
+name: ts
+
+on:
+  pull_request:
+    paths:
+      - "ts/**"
+      - "contract/**"
+      - ".github/workflows/ts.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ts/**"
+      - "contract/**"
+      - ".github/workflows/ts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ts-build-test:
+    name: Build & test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: ts/package-lock.json
+
+      - name: Install
+        working-directory: ts
+        run: npm ci
+
+      - name: Build
+        working-directory: ts
+        run: npm run build
+
+      - name: Typecheck
+        working-directory: ts
+        run: npm run typecheck
+
+      - name: Test with coverage
+        working-directory: ts
+        run: npm run test:cov

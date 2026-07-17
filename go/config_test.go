@@ -1,0 +1,236 @@
+package octoauth
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestApplyDefaultsFillsZeroValues(t *testing.T) {
+	cfg := &Config{BaseURL: "http://example.com"}
+	applyDefaults(cfg)
+
+	require.NotNil(t, cfg.HTTPClient)
+	assert.Equal(t, DefaultHTTPTimeout, cfg.HTTPClient.Timeout)
+	require.NotNil(t, cfg.Cache)
+	require.NotNil(t, cfg.Metrics)
+	_, ok := cfg.Metrics.(NoopMetrics)
+	assert.True(t, ok, "default metrics must be NoopMetrics")
+	require.NotNil(t, cfg.Logger)
+	require.NotNil(t, cfg.ErrorMapper)
+	assert.Equal(t, DefaultSessionTTL, cfg.SessionTTL)
+	assert.Equal(t, DefaultBotTTL, cfg.BotTTL)
+	assert.Equal(t, DefaultAPIKeyTTL, cfg.APIKeyTTL)
+	assert.Equal(t, DefaultNegativeTTL, cfg.NegativeTTL)
+	require.NotNil(t, cfg.RequestIncludeContext)
+	assert.True(t, *cfg.RequestIncludeContext, "RequestIncludeContext defaults to true")
+	require.NotNil(t, cfg.HashCacheKey)
+	assert.True(t, *cfg.HashCacheKey, "HashCacheKey defaults to true")
+}
+
+func TestApplyDefaultsPreservesExplicitValues(t *testing.T) {
+	custom := &http.Client{Timeout: 42 * time.Second}
+	customCache := NewLRUCache(64)
+	customLogger := slog.Default()
+	cfg := &Config{
+		BaseURL:     "http://example.com",
+		HTTPClient:  custom,
+		Cache:       customCache,
+		Logger:      customLogger,
+		SessionTTL:  99 * time.Second,
+		BotTTL:      88 * time.Second,
+		APIKeyTTL:   77 * time.Second,
+		NegativeTTL: 3 * time.Second,
+	}
+	applyDefaults(cfg)
+
+	assert.Same(t, custom, cfg.HTTPClient)
+	assert.Same(t, customLogger, cfg.Logger)
+	assert.Equal(t, 99*time.Second, cfg.SessionTTL)
+	assert.Equal(t, 88*time.Second, cfg.BotTTL)
+	assert.Equal(t, 77*time.Second, cfg.APIKeyTTL)
+	assert.Equal(t, 3*time.Second, cfg.NegativeTTL)
+}
+
+func TestApplyDefaultsRespectsExplicitFalse(t *testing.T) {
+	cfg := &Config{
+		BaseURL:               "http://example.com",
+		RequestIncludeContext: Ptr(false),
+		HashCacheKey:          Ptr(false),
+	}
+	applyDefaults(cfg)
+
+	require.NotNil(t, cfg.RequestIncludeContext)
+	assert.False(t, *cfg.RequestIncludeContext, "explicit Ptr(false) for RequestIncludeContext must survive applyDefaults")
+	require.NotNil(t, cfg.HashCacheKey)
+	assert.False(t, *cfg.HashCacheKey, "explicit Ptr(false) for HashCacheKey must survive applyDefaults")
+}
+
+func TestApplyDefaultsRespectsExplicitTrue(t *testing.T) {
+	cfg := &Config{
+		BaseURL:               "http://example.com",
+		RequestIncludeContext: Ptr(true),
+		HashCacheKey:          Ptr(true),
+	}
+	applyDefaults(cfg)
+
+	require.NotNil(t, cfg.RequestIncludeContext)
+	assert.True(t, *cfg.RequestIncludeContext)
+	require.NotNil(t, cfg.HashCacheKey)
+	assert.True(t, *cfg.HashCacheKey)
+}
+
+func TestPtrHelper(t *testing.T) {
+	b := Ptr(false)
+	require.NotNil(t, b)
+	assert.False(t, *b)
+
+	s := Ptr("hello")
+	require.NotNil(t, s)
+	assert.Equal(t, "hello", *s)
+}
+
+func TestApplyDefaultsPanicsOnNil(t *testing.T) {
+	assert.Panics(t, func() { applyDefaults(nil) })
+}
+
+// TestApplyDefaultsCoercesNegativeTTL guards reviewer P1-D: a miscalculated
+// negative duration (e.g. SessionTTL: -1*time.Hour) MUST be coerced to the
+// documented default. Without this coercion the value flows through to
+// cache.Set, which treats ttl <= 0 as "no expiry" — permanent auth cache,
+// unbounded SSO-revocation window.
+func TestApplyDefaultsCoercesNegativeTTL(t *testing.T) {
+	cfg := &Config{
+		BaseURL:     "http://example.com",
+		SessionTTL:  -1 * time.Second,
+		BotTTL:      -1 * time.Hour,
+		APIKeyTTL:   -42 * time.Millisecond,
+		NegativeTTL: -1 * time.Nanosecond,
+	}
+	applyDefaults(cfg)
+
+	assert.Equal(t, DefaultSessionTTL, cfg.SessionTTL, "negative SessionTTL must coerce to default")
+	assert.Equal(t, DefaultBotTTL, cfg.BotTTL, "negative BotTTL must coerce to default")
+	assert.Equal(t, DefaultAPIKeyTTL, cfg.APIKeyTTL, "negative APIKeyTTL must coerce to default")
+	assert.Equal(t, DefaultNegativeTTL, cfg.NegativeTTL, "negative NegativeTTL must coerce to default")
+}
+
+// TestApplyDefaultsInstallsRedirectGuard guards reviewer P1-B: the default
+// HTTPClient MUST refuse to follow 3xx so a 307/308 does not replay the
+// POST body — containing raw credentials — to an attacker-controlled or
+// misconfigured Location.
+func TestApplyDefaultsInstallsRedirectGuard(t *testing.T) {
+	cfg := &Config{BaseURL: "http://example.com"}
+	applyDefaults(cfg)
+
+	require.NotNil(t, cfg.HTTPClient)
+	require.NotNil(t, cfg.HTTPClient.CheckRedirect, "default client MUST have CheckRedirect set")
+	err := cfg.HTTPClient.CheckRedirect(nil, nil)
+	assert.ErrorIs(t, err, http.ErrUseLastResponse, "CheckRedirect must return http.ErrUseLastResponse to halt redirect chain")
+}
+
+// TestApplyDefaultsInstallsRedirectGuardOnUserClient guards reviewer P1-F:
+// a caller-supplied HTTPClient MUST also get the CheckRedirect guard so
+// the credential-leak protection does not depend on caller diligence.
+// applyDefaults mutates the caller's client in place — documented on
+// Config.HTTPClient.
+func TestApplyDefaultsInstallsRedirectGuardOnUserClient(t *testing.T) {
+	userClient := &http.Client{Timeout: 3 * time.Second} // no CheckRedirect
+	cfg := &Config{
+		BaseURL:    "http://example.com",
+		HTTPClient: userClient,
+	}
+	applyDefaults(cfg)
+
+	// The exact same pointer is retained (no clone).
+	assert.Same(t, userClient, cfg.HTTPClient)
+	require.NotNil(t, userClient.CheckRedirect, "user-supplied client MUST have CheckRedirect set by applyDefaults")
+	err := userClient.CheckRedirect(nil, nil)
+	assert.ErrorIs(t, err, http.ErrUseLastResponse)
+}
+
+// TestApplyDefaultsPreservesUserCheckRedirect: if the caller supplied their
+// own CheckRedirect, applyDefaults must NOT overwrite it — the caller
+// opted into a custom redirect policy on purpose. (E.g. a proxy that
+// follows same-origin 3xx internally.)
+func TestApplyDefaultsPreservesUserCheckRedirect(t *testing.T) {
+	sentinel := errors.New("caller's policy")
+	userCheck := func(*http.Request, []*http.Request) error { return sentinel }
+	userClient := &http.Client{CheckRedirect: userCheck}
+	cfg := &Config{BaseURL: "http://example.com", HTTPClient: userClient}
+	applyDefaults(cfg)
+
+	// The custom policy survives.
+	got := userClient.CheckRedirect(nil, nil)
+	assert.ErrorIs(t, got, sentinel, "applyDefaults MUST NOT overwrite a non-nil CheckRedirect")
+}
+
+func TestDefaultErrorMapper(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "invalid_credential",
+			err:        &Error{Kind: ErrKindInvalidCredential, Message: "expired"},
+			wantStatus: http.StatusUnauthorized,
+			wantBody:   `{"error":"unauthorized"}`,
+		},
+		{
+			name:       "disabled",
+			err:        &Error{Kind: ErrKindDisabled},
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"disabled"}`,
+		},
+		{
+			name:       "infra_failure",
+			err:        &Error{Kind: ErrKindInfraFailure, Cause: errors.New("dial fail")},
+			wantStatus: http.StatusServiceUnavailable,
+			wantBody:   `{"error":"upstream_unavailable"}`,
+		},
+		{
+			name:       "forbidden",
+			err:        &Error{Kind: ErrKindForbidden},
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"forbidden"}`,
+		},
+		{
+			name:       "prev2_falls_through_to_internal",
+			err:        &Error{Kind: ErrKindPreV2Server},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":"internal"}`,
+		},
+		{
+			name:       "non_sdk_error_is_internal",
+			err:        errors.New("random"),
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":"internal"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := DefaultErrorMapper(tc.err)
+			assert.Equal(t, tc.wantStatus, status)
+			assert.Equal(t, tc.wantBody, string(body))
+		})
+	}
+}
+
+func TestDefaultErrorMapperNoEnumerationLeak(t *testing.T) {
+	// Two distinct invalid-credential errors with different messages must
+	// produce byte-identical responses so the mapper cannot be probed to
+	// distinguish expired from unknown from malformed tokens.
+	a := &Error{Kind: ErrKindInvalidCredential, Message: "expired"}
+	b := &Error{Kind: ErrKindInvalidCredential, Message: "unknown", Verifier: KindSession}
+	statusA, bodyA := DefaultErrorMapper(a)
+	statusB, bodyB := DefaultErrorMapper(b)
+	assert.Equal(t, statusA, statusB)
+	assert.Equal(t, bodyA, bodyB)
+}

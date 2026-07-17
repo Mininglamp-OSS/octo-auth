@@ -1,0 +1,424 @@
+openapi: 3.1.0
+info:
+  title: Octo Auth Verify Contract
+  version: "1.0.0"
+  contact:
+    name: octo-auth maintainers
+    url: https://github.com/Mininglamp-OSS/octo-auth
+  description: |
+    Wire contract for octo-server's three verify endpoints, consumed by
+    the octo-auth SDK (`../go`, `../ts`) and any other client that needs
+    to authenticate a caller-supplied credential.
+
+    ## Verifier realms
+
+    The contract exposes one endpoint per credential realm. The SDK names
+    for each realm are:
+
+    - **sessionVerifier** — human web-session tokens (32-hex UUID, no prefix).
+    - **botTokenVerifier** — bot tokens (`bf_` User Bot; `app_` reserved for
+      App Bot, not implemented by the SDK v1 wire path).
+    - **userKeyVerifier** — long-lived user API keys (`uk_<...>`, length >= 35).
+
+    A single SDK-side `MultiVerifier` dispatches to the correct realm by
+    credential prefix so that consumers can accept a mix of credentials on
+    one HTTP handler.
+
+    ## `include=context` semantics
+
+    `sessionVerifier` and `userKeyVerifier` accept an optional
+    `?include=context` **query parameter** (single string; the server
+    checks `c.Query("include") == "context"`). When set, the server
+    populates the extra context fields on the response — `spaces` /
+    `owned_bots_by_space` for session, `owned_bots` (space-keyed map) for
+    api-key.
+
+    `botTokenVerifier` (`/v1/auth/verify-bot`) does **not** accept
+    `include=context`; its response `space_id` is already
+    server-authoritative (see "Anti-spoof `space_id`" below).
+
+    ### Wire states of `context_included`
+
+    | request                | wire `context_included` | SDK-observed state           |
+    | ---------------------- | ----------------------- | ---------------------------- |
+    | `?include=context` sent | `true`                  | `ContextIncluded` — v2+ server honoured the ask; extra fields are authoritative. |
+    | `?include=context` sent | field absent            | `ContextUnknownServer` — the SDK maps here for BOTH "pre-v2 server (never sent the field)" AND "v2+ server that declined this call". |
+    | `?include=context` NOT sent | (any)               | `ContextNotRequested` — no interpretation attempted. |
+
+    **Honest limitation.** As of server v3, `context_included` is emitted
+    with `omitempty`, which erases `false` on the wire. That means a v2+
+    server that *declined* a specific call is indistinguishable from a
+    pre-v2 server on this response — both produce a missing field. The
+    SDK collapses both cases to `ContextUnknownServer`. A separate SDK
+    state `ContextNotIncluded` remains defined but is unreachable in
+    v3-era servers; it is preserved so the SDK can distinguish the two
+    once the server drops `omitempty` (see "Future work" below).
+
+    Callers MUST NOT infer authorisation from an empty `spaces` array —
+    that is a legitimate v2+ response for a user with zero space
+    memberships. Only `context_included == true` marks the extra fields
+    as authoritative.
+
+    ### Future work
+
+    When octo-server removes the `omitempty` tag on `context_included`,
+    an explicit `false` will start reaching the wire and the SDK's
+    `ContextNotIncluded` state will become reachable. Tracked in a
+    forthcoming octo-server issue; no client-side change required.
+
+    ## Anti-spoof `space_id`
+
+    On `verify-bot`, `space_id` in the response is **server-authoritative**
+    (the binding row on the bot). Consumer middleware MUST ignore any
+    `X-Space-Id` request header for bot-authenticated requests and use the
+    response `space_id` verbatim. Trusting the header would let a caller
+    with a valid bot token address a space the bot is not bound to.
+
+    ## Fail-closed contract for `?include=context`
+
+    Consumer middleware (fleet, matter) that passes `?include=context`
+    MUST fail-closed when the response state is `ContextUnknownServer`
+    OR when `space_id` (api-key) is empty. See `../docs/` for the full
+    consumer contract.
+
+    ## Anti-enumeration
+
+    All "token bad" reasons — missing, malformed, unknown, expired, kind
+    mismatch — collapse to the single wire code `AUTH_INVALID_CREDENTIAL`
+    (HTTP 401). The specific reason lives in octo-server's audit log,
+    never on the wire. See `errors-v1.yaml` for the full code enumeration.
+
+servers:
+  - url: https://octo-server.example.com
+    description: Placeholder — configure your deployment's octo-server URL.
+
+tags:
+  - name: verify
+    description: Credential verification endpoints consumed by the octo-auth SDK.
+
+paths:
+  /v1/auth/verify:
+    post:
+      summary: sessionVerifier — verify a human session token
+      operationId: verifySession
+      tags: [verify]
+      description: |
+        Resolves a human web-session token (32-hex UUID, no prefix) to a
+        Principal. With `?include=context`, also returns the user's
+        `spaces` and `owned_bots_by_space` so downstream middleware can
+        fail-closed on `X-Space-Id` mismatches without a second round-trip.
+
+        See the top-level "include=context semantics" section for the
+        state table and the fail-closed contract.
+      parameters:
+        - in: query
+          name: include
+          required: false
+          schema:
+            type: string
+            enum: [context]
+          description: |
+            When set to `context`, the response is populated with
+            `context_included`, `spaces`, and `owned_bots_by_space`.
+            Any other value is ignored by the server.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifySessionRequest"
+      responses:
+        "200":
+          description: Verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifySessionResponse"
+        "401":
+          description: |
+            Token bad — collapses all failure reasons to
+            `AUTH_INVALID_CREDENTIAL`.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Upstream unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+
+  /v1/auth/verify-bot:
+    post:
+      summary: botTokenVerifier — verify a bot token
+      operationId: verifyBotToken
+      tags: [verify]
+      description: |
+        Resolves a bot token to a Principal. Prefix routes:
+
+        - `bf_<...>` — User Bot.
+        - `app_<...>` — App Bot. **Reserved**; SDK v1 does not implement
+          the App Bot wire path. Servers that receive an `app_` token
+          without App Bot support MUST respond `AUTH_INVALID_CREDENTIAL`.
+
+        `space_id` in the response is server-authoritative — see the
+        top-level "Anti-spoof space_id" section. Consumer middleware MUST
+        NOT read `X-Space-Id` from the request for bot-authenticated
+        traffic.
+
+        This endpoint does **not** accept `?include=context`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyBotTokenRequest"
+      responses:
+        "200":
+          description: Verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyBotTokenResponse"
+        "401":
+          description: Token bad or bot not found.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Bot disabled by the platform.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Upstream unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+
+  /v1/auth/verify-api-key:
+    post:
+      summary: userKeyVerifier — verify a user API key
+      operationId: verifyUserKey
+      tags: [verify]
+      description: |
+        Resolves a `uk_<...>`-prefixed user API key (length >= 35) to a
+        Principal. Long-lived keys are used by daemons and CI runners
+        (e.g. octo-fleet's runtime daemon).
+
+        Accepts the same `?include=context` query parameter as
+        `sessionVerifier`; the same state table applies. Unlike session,
+        an api key is bound to exactly one space, so `owned_bots` on the
+        response is a single-key map (`{ <bound_space_id>: [...bot_uids] }`).
+      parameters:
+        - in: query
+          name: include
+          required: false
+          schema:
+            type: string
+            enum: [context]
+          description: |
+            When set to `context`, the response is populated with
+            `context_included` and `owned_bots` (single-key map on the
+            api key's bound space).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyUserKeyRequest"
+      responses:
+        "200":
+          description: Verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyUserKeyResponse"
+        "401":
+          description: Key bad or not found.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Key owner is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Upstream unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "errors-v1.yaml#/components/schemas/ErrorEnvelope"
+
+components:
+  schemas:
+    VerifySessionRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: |
+            Human session token — 32 hex characters, no prefix. The SDK
+            classifies "no known prefix" as sessionVerifier realm.
+
+    VerifySessionResponse:
+      type: object
+      required: [uid, name, role]
+      properties:
+        uid:
+          type: string
+          description: Principal UID.
+        name:
+          type: string
+        role:
+          type: string
+          description: |
+            System role. Empty string for regular users; other values
+            (e.g. `"admin"`, `"superAdmin"`) are platform-defined.
+        owned_bots:
+          type: array
+          description: |
+            Bots owned by this user. Present in v2+ responses (may be an
+            empty array); may be omitted by pre-v2 servers. Each entry
+            is an `OwnedBot` object with `uid` and `name`.
+          items:
+            $ref: "#/components/schemas/OwnedBot"
+        context_included:
+          type: boolean
+          description: |
+            Present-and-`true` iff `?include=context` was sent AND the
+            v2+ server populated the extra fields. Absent otherwise —
+            see the top-level "include=context semantics" section for
+            the wire state table.
+        spaces:
+          type: array
+          description: |
+            Space IDs the user is a member of. Authoritative when and
+            only when `context_included == true`. An empty array is a
+            legitimate v2+ response for a user with zero memberships.
+          items:
+            type: string
+        owned_bots_by_space:
+          type: object
+          description: |
+            Map of space_id → list of bot UIDs owned by this user in
+            that space. Authoritative when `context_included == true`.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    OwnedBot:
+      type: object
+      required: [uid, name]
+      description: |
+        A bot owned by the verified session user. Mirrors
+        `ownedBot` on the server side (`modules/user/api.go`).
+      properties:
+        uid:
+          type: string
+        name:
+          type: string
+
+    VerifyBotTokenRequest:
+      type: object
+      required: [bot_token]
+      properties:
+        bot_token:
+          type: string
+          description: |
+            Bot token. Accepted prefixes:
+
+            - `bf_<...>` — User Bot; SDK v1 wire path.
+            - `app_<...>` — App Bot; **reserved for a future release**,
+              not implemented by SDK v1. Servers without App Bot support
+              MUST respond `AUTH_INVALID_CREDENTIAL` for `app_` tokens.
+
+            Unprefixed tokens are rejected by the SDK's `MultiVerifier`
+            classifier before the request is sent.
+
+    VerifyBotTokenResponse:
+      type: object
+      required:
+        - bot_uid
+        - bot_name
+        - owner_uid
+        - owner_name
+        - space_id
+      properties:
+        bot_uid:
+          type: string
+        bot_name:
+          type: string
+        role:
+          type: string
+          description: |
+            Optional bot role hint. Server does not emit this field as
+            of v3, so consumers always observe empty string; declared
+            here so SDKs can decode a future server that supplies it
+            without a wire-shape bump.
+        owner_uid:
+          type: string
+        owner_name:
+          type: string
+        space_id:
+          type: string
+          description: |
+            Server-authoritative space binding for this bot. Consumer
+            middleware MUST ignore any `X-Space-Id` header from the
+            request and treat this value as the canonical binding — see
+            the top-level "Anti-spoof space_id" section.
+
+    VerifyUserKeyRequest:
+      type: object
+      required: [api_key]
+      properties:
+        api_key:
+          type: string
+          description: |
+            User API key with `uk_` prefix; total length MUST be >= 35.
+            The SDK's `MultiVerifier` enforces the length floor before
+            dispatching to this endpoint.
+
+    VerifyUserKeyResponse:
+      type: object
+      required: [uid, space_id]
+      properties:
+        uid:
+          type: string
+          description: Principal UID that owns the key.
+        space_id:
+          type: string
+          description: |
+            The single space this api key is bound to.
+            **Server-authoritative** — consumer middleware MUST fail-closed
+            when this value is empty. Not shaped as a list because an api
+            key binds to exactly one space (unlike a session, which spans
+            all spaces the user belongs to).
+        context_included:
+          type: boolean
+          description: |
+            Present-and-`true` iff `?include=context` was sent AND the
+            v2+ server populated `owned_bots`. Absent otherwise — see
+            the top-level "include=context semantics" section.
+        owned_bots:
+          type: object
+          description: |
+            Map of `space_id` → bot UIDs the key's owner controls in
+            that space. Populated only when `?include=context` was
+            requested and the server honoured it. Because api keys bind
+            to exactly one space, the outer map has at most one key —
+            the `space_id` above. Consumers derive the `Spaces` slice
+            on the SDK Principal from the sorted keys of this map.
+          additionalProperties:
+            type: array
+            items:
+              type: string

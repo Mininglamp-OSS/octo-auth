@@ -1,0 +1,83 @@
+openapi: 3.1.0
+info:
+  title: Octo Auth Error Codes
+  version: "1.0.0"
+  contact:
+    name: octo-auth maintainers
+    url: https://github.com/Mininglamp-OSS/octo-auth
+  description: |
+    Enumeration of wire error codes for the octo-auth verify contract
+    (`auth-v1.yaml`). This file exists as an OpenAPI document so that
+    (a) the schema `$ref` from `auth-v1.yaml` resolves against the same
+    tooling and (b) the code list is machine-readable for SDK generators
+    and contract tests.
+
+    ## Wire vs. SDK error kinds
+
+    The SDK exposes five typed error kinds
+    (`ErrKindInvalidCredential` / `ErrKindDisabled` /
+    `ErrKindInfraFailure` / `ErrKindForbidden` / `ErrKindPreV2Server`).
+    Four of them map onto wire codes; `ErrKindPreV2Server` is internal
+    and never appears on the wire — the SDK derives it from an absent
+    `context_included` field on an otherwise-successful response and
+    surfaces it via `ContextUnknownServer` on the returned Principal.
+
+    | SDK error kind              | Wire code                  | HTTP | Notes                                             |
+    | --------------------------- | -------------------------- | ---- | ------------------------------------------------- |
+    | ErrKindInvalidCredential    | `AUTH_INVALID_CREDENTIAL`  | 401  | Anti-enumeration catch-all — see below.           |
+    | ErrKindDisabled             | `AUTH_DISABLED`            | 403  | Principal authenticated but disabled.             |
+    | ErrKindForbidden            | `AUTH_FORBIDDEN`            | 403  | Authenticated but not authorised for this space.  |
+    | ErrKindInfraFailure         | `AUTH_INFRA_FAILURE`        | 503  | Upstream verify endpoint unavailable.             |
+    | ErrKindPreV2Server          | *(not on the wire)*        | —    | Internal signal; see design docs.                 |
+
+    ## Anti-enumeration
+
+    `AUTH_INVALID_CREDENTIAL` collapses every "token bad" reason —
+    missing, malformed, unknown, expired, disabled at the credential
+    layer, kind mismatch — into a single wire outcome. The specific
+    reason lives in the server's audit log only. Callers MUST NOT
+    branch on any implied sub-reason; the SDK's typed error preserves
+    only the bucket (`ErrInvalidCredential`), never the finer reason.
+
+servers:
+  - url: https://octo-server.example.com
+    description: |
+      Placeholder — this document defines shared error components only;
+      the actual endpoints live in `auth-v1.yaml`.
+
+components:
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        schema_version:
+          type: integer
+          enum: [1]
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - AUTH_INVALID_CREDENTIAL
+                - AUTH_DISABLED
+                - AUTH_FORBIDDEN
+                - AUTH_INFRA_FAILURE
+              description: |
+                Stable machine-readable error code. See the top-level
+                "Wire vs. SDK error kinds" table for the mapping to SDK
+                typed errors and HTTP status codes.
+            message:
+              type: string
+              description: |
+                Human-readable message. Localised per Accept-Language
+                where the upstream supports it. Not safe to switch on;
+                use `code` for programmatic dispatch.
+            http_status:
+              type: integer
+              description: |
+                Intended HTTP status. Provided as a hint for consumers
+                that map the envelope onto their own error type; the
+                actual response status is set by the transport layer.

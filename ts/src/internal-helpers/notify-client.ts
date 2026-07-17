@@ -1,0 +1,220 @@
+/**
+ * internal-helpers/notify-client — X-Internal-Token producer channel.
+ *
+ * See design doc §9.1 and Go SDK's internal_helpers/notify_client.go.
+ * Constructor reads the token from process.env at build time and throws if
+ * empty — a "fail-closed at startup" posture matching Go's NewNotifyClient.
+ */
+
+import { createHash } from 'node:crypto'
+import type { Logger } from '../config.js'
+import { consoleLogger } from '../config.js'
+
+/** DefaultNotifyTimeoutMs matches Go's DefaultNotifyTimeout (10s). */
+export const DEFAULT_NOTIFY_TIMEOUT_MS = 10_000
+const DEFAULT_NOTIFY_PATH = '/v1/internal/notify'
+
+/**
+ * MAX_NOTIFY_BODY_BYTES bounds how many bytes of the notify response are
+ * drained. Notify responses are effectively empty (status-only contract)
+ * — 64 KiB is orders of magnitude over any legitimate reply. The cap
+ * prevents a malicious/compromised upstream from OOM-ing the SDK
+ * consumer via an unbounded body stream. Reviewer P1-G.
+ */
+const MAX_NOTIFY_BODY_BYTES = 64 << 10 // 64 KiB
+
+/** Drain up to maxBytes of resp.body without buffering the full payload. */
+async function drainBounded(resp: Response, maxBytes: number): Promise<void> {
+  if (!resp.body) return
+  const reader = resp.body.getReader()
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        try { await reader.cancel() } catch { /* ignore */ }
+        return
+      }
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* ignore */ }
+  }
+}
+
+/** NotifyConfig configures a NotifyClient. */
+export interface NotifyConfig {
+  /** Required. Target service base URL, e.g. https://octo-server:8090. */
+  baseUrl: string
+  /** Required. Process env var to read the shared secret from. */
+  tokenEnvVar: string
+  /** Fetch implementation. Defaults to globalThis.fetch. */
+  fetch?: typeof globalThis.fetch
+  /** Per-request timeout ms. Defaults to 10_000. */
+  timeoutMs?: number
+  /** Logger. Defaults to consoleLogger. */
+  logger?: Logger
+  /** Optional path override. Must start with "/" when set. */
+  notifyPath?: string
+}
+
+/**
+ * NotifyRequest is the payload sent to /v1/internal/notify. In v1 the shape
+ * is intentionally minimal (channel_id + message); callers whose contract
+ * needs a different shape can pass `rawBody` and leave the primary fields
+ * empty.
+ */
+export interface NotifyRequest {
+  channelId?: string
+  message?: string
+  /** When set, this JSON string is sent verbatim; channelId/message ignored. */
+  rawBody?: string
+}
+
+/**
+ * NotifyClient posts service-authenticated notifications via the shared-secret
+ * X-Internal-Token producer channel. Instances are safe for concurrent use.
+ */
+export class NotifyClient {
+  private readonly baseUrl: string
+  private readonly path: string
+  private readonly token: string
+  private readonly tokenHint: string
+  private readonly fetchImpl: typeof globalThis.fetch
+  private readonly timeoutMs: number
+  private readonly logger: Logger
+
+  constructor(cfg: NotifyConfig) {
+    if (!cfg.baseUrl) {
+      throw new Error(
+        'octoauth/internal-helpers: NotifyConfig.baseUrl is required',
+      )
+    }
+    if (!cfg.tokenEnvVar) {
+      throw new Error(
+        'octoauth/internal-helpers: NotifyConfig.tokenEnvVar is required',
+      )
+    }
+    const token = process.env[cfg.tokenEnvVar]
+    if (!token) {
+      throw new Error(
+        `octoauth/internal-helpers: env var "${cfg.tokenEnvVar}" is empty (fail-closed)`,
+      )
+    }
+    this.baseUrl = cfg.baseUrl
+    this.path = cfg.notifyPath ?? DEFAULT_NOTIFY_PATH
+    this.token = token
+    this.tokenHint = maskToken(token)
+    if (cfg.fetch !== undefined) {
+      this.fetchImpl = cfg.fetch
+    } else {
+      if (typeof globalThis.fetch !== 'function') {
+        throw new Error(
+          'octoauth/internal-helpers: globalThis.fetch is not available; pass NotifyConfig.fetch',
+        )
+      }
+      this.fetchImpl = globalThis.fetch.bind(globalThis)
+    }
+    this.timeoutMs = cfg.timeoutMs ?? DEFAULT_NOTIFY_TIMEOUT_MS
+    this.logger = cfg.logger ?? consoleLogger
+  }
+
+  /**
+   * send posts req to the notify endpoint. Non-2xx status becomes an Error
+   * whose message contains ONLY the status code — the response body is NOT
+   * included so log scrapers cannot enumerate server-side messages via the
+   * caller's error path.
+   */
+  async send(req: NotifyRequest, signal?: AbortSignal): Promise<void> {
+    let body: string
+    if (req.rawBody !== undefined && req.rawBody !== '') {
+      body = req.rawBody
+    } else {
+      try {
+        body = JSON.stringify({
+          channel_id: req.channelId ?? '',
+          message: req.message ?? '',
+        })
+      } catch (err) {
+        throw new Error(
+          `octoauth/internal-helpers: encode notify request: ${(err as Error).message}`,
+        )
+      }
+    }
+
+    const timeoutCtl = new AbortController()
+    const timer = setTimeout(() => timeoutCtl.abort(), this.timeoutMs)
+    const composite = signal
+      ? AbortSignal.any([signal, timeoutCtl.signal])
+      : timeoutCtl.signal
+    let resp: Response
+    try {
+      resp = await this.fetchImpl(this.baseUrl + this.path, {
+        method: 'POST',
+        // Fail-closed on 3xx: the notify POST carries X-Internal-Token, a
+        // long-lived shared secret. WHATWG fetch's default 'follow' would
+        // let a redirecting proxy or compromised upstream steal the token
+        // via a 307/308 Location pointing at attacker infra — the Fetch
+        // spec strips Authorization on cross-origin redirects but NOT
+        // arbitrary custom headers. Reviewer P1-E.
+        redirect: 'error',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'X-Internal-Token': this.token,
+        },
+        body,
+        signal: composite,
+      })
+    } catch (err) {
+      this.logger.debug('octoauth/internal-helpers: notify transport error', {
+        endpoint: this.path,
+        token_hint: this.tokenHint,
+      })
+      throw new Error(
+        `octoauth/internal-helpers: notify request failed: ${(err as Error).message}`,
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+    // Drain the body so the connection can be reused, bounded so a
+    // misbehaving upstream cannot OOM the SDK consumer. Reviewer P1-G.
+    try {
+      await drainBounded(resp, MAX_NOTIFY_BODY_BYTES)
+    } catch {
+      // Ignore drain errors.
+    }
+    this.logger.debug('octoauth/internal-helpers: notify sent', {
+      endpoint: this.path,
+      status: resp.status,
+      token_hint: this.tokenHint,
+    })
+    if (resp.status < 200 || resp.status >= 300) {
+      throw new Error(
+        `octoauth/internal-helpers: notify failed: status ${resp.status}`,
+      )
+    }
+  }
+}
+
+/**
+ * newNotifyClient is a convenience factory function equivalent to
+ * `new NotifyClient(cfg)`.
+ */
+export function newNotifyClient(cfg: NotifyConfig): NotifyClient {
+  return new NotifyClient(cfg)
+}
+
+/**
+ * maskToken returns a non-reversible fingerprint of the internal shared
+ * secret suitable for logs. Leaking any prefix of the raw token would
+ * shrink the guess-space of a long-lived shared secret, so a SHA-256
+ * truncation is used instead. Stable for a given input; reveals no
+ * material of the underlying secret.
+ */
+export function maskToken(t: string): string {
+  if (!t) return ''
+  const digest = createHash('sha256').update(t).digest('hex')
+  return `sha256:${digest.slice(0, 6)}`
+}
