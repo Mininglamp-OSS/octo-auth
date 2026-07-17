@@ -1,0 +1,169 @@
+import { afterEach, describe, expect, it } from 'vitest'
+
+import {
+  DEFAULT_NOTIFY_TIMEOUT_MS,
+  NotifyClient,
+  maskToken,
+  newNotifyClient,
+} from '../src/internal-helpers/index.js'
+import { startMockServer, type MockServerHandle } from './helpers/mock-server.js'
+import { newRecordingLogger } from './helpers/recording.js'
+
+let handle: MockServerHandle | undefined
+afterEach(async () => {
+  if (handle) {
+    await handle.close()
+    handle = undefined
+  }
+  // Clean up test env vars so tests are isolated.
+  for (const k of Object.keys(process.env)) {
+    if (k.startsWith('TEST_NOTIFY_')) delete process.env[k]
+  }
+})
+
+describe('NotifyClient — construction fail-closed', () => {
+  it('throws when baseUrl empty', () => {
+    process.env['TEST_NOTIFY_A'] = 'test-secret-a'
+    expect(
+      () =>
+        new NotifyClient({
+          baseUrl: '',
+          tokenEnvVar: 'TEST_NOTIFY_A',
+        }),
+    ).toThrow(/baseUrl is required/)
+  })
+
+  it('throws when tokenEnvVar empty', () => {
+    expect(
+      () =>
+        new NotifyClient({
+          baseUrl: 'https://octo.test',
+          tokenEnvVar: '',
+        }),
+    ).toThrow(/tokenEnvVar is required/)
+  })
+
+  it('throws when env var missing (fail-closed at startup)', () => {
+    delete process.env['TEST_NOTIFY_MISSING']
+    expect(
+      () =>
+        new NotifyClient({
+          baseUrl: 'https://octo.test',
+          tokenEnvVar: 'TEST_NOTIFY_MISSING',
+        }),
+    ).toThrow(/fail-closed/)
+  })
+
+  it('exposes newNotifyClient factory equivalent to `new`', () => {
+    process.env['TEST_NOTIFY_FACTORY'] = 'test-secret-factory'
+    const c = newNotifyClient({
+      baseUrl: 'https://octo.test',
+      tokenEnvVar: 'TEST_NOTIFY_FACTORY',
+    })
+    expect(c).toBeInstanceOf(NotifyClient)
+  })
+
+  it('DEFAULT_NOTIFY_TIMEOUT_MS matches Go DefaultNotifyTimeout (10s)', () => {
+    expect(DEFAULT_NOTIFY_TIMEOUT_MS).toBe(10_000)
+  })
+})
+
+describe('NotifyClient — send', () => {
+  it('POSTs JSON with X-Internal-Token header and honors 2xx', async () => {
+    handle = await startMockServer(async () => ({ status: 204 }))
+    process.env['TEST_NOTIFY_SEND'] = 'test-secret-send-token'
+    const c = new NotifyClient({
+      baseUrl: handle.baseUrl,
+      tokenEnvVar: 'TEST_NOTIFY_SEND',
+    })
+    await c.send({ channelId: 'ch-1', message: 'hi' })
+    const req = handle.requests[0]!
+    expect(req.method).toBe('POST')
+    expect(req.path).toBe('/v1/internal/notify')
+    expect(req.headers['x-internal-token']).toBe('test-secret-send-token')
+    expect(JSON.parse(req.body)).toEqual({ channel_id: 'ch-1', message: 'hi' })
+  })
+
+  it('non-2xx surfaces status code but NOT server body (anti-enumeration)', async () => {
+    handle = await startMockServer(async () => ({
+      status: 500,
+      body: '{"secret_internal_reason":"user X does not exist in space Y"}',
+    }))
+    process.env['TEST_NOTIFY_ERR'] = 'test-secret-err-token'
+    const c = new NotifyClient({
+      baseUrl: handle.baseUrl,
+      tokenEnvVar: 'TEST_NOTIFY_ERR',
+    })
+    try {
+      await c.send({ channelId: 'x', message: 'y' })
+      expect.fail('should have thrown')
+    } catch (err) {
+      const msg = (err as Error).message
+      expect(msg).toMatch(/status 500/)
+      // No leak of the server body:
+      expect(msg).not.toMatch(/secret_internal_reason/)
+      expect(msg).not.toMatch(/user X/)
+    }
+  })
+
+  it('rawBody overrides the primary shape', async () => {
+    handle = await startMockServer(async () => ({ status: 200 }))
+    process.env['TEST_NOTIFY_RAW'] = 'test-secret-raw-token'
+    const c = new NotifyClient({
+      baseUrl: handle.baseUrl,
+      tokenEnvVar: 'TEST_NOTIFY_RAW',
+    })
+    await c.send({
+      channelId: 'ignored',
+      message: 'ignored',
+      rawBody: '{"custom_shape":true,"foo":42}',
+    })
+    expect(JSON.parse(handle.requests[0]!.body)).toEqual({
+      custom_shape: true,
+      foo: 42,
+    })
+  })
+
+  it('transport failure surfaces without server body context', async () => {
+    process.env['TEST_NOTIFY_NET'] = 'test-secret-net-token'
+    const c = new NotifyClient({
+      baseUrl: 'http://127.0.0.1:1', // deliberately unreachable
+      tokenEnvVar: 'TEST_NOTIFY_NET',
+      timeoutMs: 200,
+    })
+    await expect(
+      c.send({ channelId: 'x', message: 'y' }),
+    ).rejects.toThrow(/notify request failed/)
+  })
+
+  it('logger only records maskToken hint, never the raw secret', async () => {
+    handle = await startMockServer(async () => ({ status: 204 }))
+    process.env['TEST_NOTIFY_LOG'] = 'test-secret-super-long-token-value-1234'
+    const { logger, recorded } = newRecordingLogger()
+    const c = new NotifyClient({
+      baseUrl: handle.baseUrl,
+      tokenEnvVar: 'TEST_NOTIFY_LOG',
+      logger,
+    })
+    await c.send({ channelId: 'c', message: 'm' })
+    for (const m of recorded.messages) {
+      // The raw token must never appear in log lines.
+      expect(m.message + JSON.stringify(m.meta ?? {})).not.toMatch(
+        /test-secret-super-long-token-value-1234/,
+      )
+    }
+    // But we should see the masked hint.
+    const flat = JSON.stringify(recorded)
+    expect(flat).toContain('test-sec...')
+  })
+})
+
+describe('maskToken', () => {
+  it('returns *** for tokens shorter than 8 chars', () => {
+    expect(maskToken('short')).toBe('***')
+  })
+
+  it('returns first 8 chars + ...', () => {
+    expect(maskToken('abcdefghijklm')).toBe('abcdefgh...')
+  })
+})

@@ -1,0 +1,6 @@
+extends: [[spectral:oas, recommended]]
+rules:
+  # errors-v1.yaml is a shared components-only file whose schemas are referenced
+  # by auth-v1.yaml via cross-file $ref; spectral cannot see across files so
+  # its "unused component" check fires false positives.
+  oas3-unused-component: off

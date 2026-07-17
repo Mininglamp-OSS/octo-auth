@@ -1,0 +1,85 @@
+{
+  "name": "@mininglamp-oss/octo-auth",
+  "version": "0.1.0",
+  "description": "Client SDK to verify octo-server credentials (session / bot / user-api-key).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./middleware/express": {
+      "import": "./dist/middleware/express.js",
+      "types": "./dist/middleware/express.d.ts"
+    },
+    "./middleware/hocuspocus": {
+      "import": "./dist/middleware/hocuspocus.js",
+      "types": "./dist/middleware/hocuspocus.d.ts"
+    },
+    "./internal-helpers": {
+      "import": "./dist/internal-helpers/index.js",
+      "types": "./dist/internal-helpers/index.d.ts"
+    },
+    "./layer2": {
+      "import": "./dist/layer2.js",
+      "types": "./dist/layer2.d.ts"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mininglamp-OSS/octo-auth.git",
+    "directory": "ts"
+  },
+  "bugs": {
+    "url": "https://github.com/Mininglamp-OSS/octo-auth/issues"
+  },
+  "homepage": "https://github.com/Mininglamp-OSS/octo-auth#readme",
+  "keywords": [
+    "octo",
+    "auth",
+    "sdk",
+    "verifier",
+    "middleware"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "jose": "^5.9.0",
+    "lru-cache": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "express": "^5.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@hocuspocus/server": "^2.0.0 || ^3.0.0",
+    "express": "^4.0.0 || ^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    },
+    "@hocuspocus/server": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run",
+    "test:cov": "vitest run --coverage"
+  }
+}

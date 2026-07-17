@@ -1,0 +1,66 @@
+name: contract
+
+on:
+  pull_request:
+    paths:
+      - "contract/**"
+      - ".spectral.yaml"
+      - ".github/workflows/contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "contract/**"
+      - ".spectral.yaml"
+      - ".github/workflows/contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-lint:
+    name: Spectral lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install spectral
+        run: npm install -g @stoplight/spectral-cli@6.15.0
+
+      - name: Lint auth-v1.yaml
+        run: spectral lint contract/auth-v1.yaml --fail-severity=warn
+
+      - name: Lint errors-v1.yaml
+        run: spectral lint contract/errors-v1.yaml --fail-severity=warn
+
+  contract-breaking-check:
+    name: Breaking-change check (oasdiff)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract base contract
+        run: |
+          mkdir -p /tmp/base
+          if git show "${{ github.event.pull_request.base.sha }}:contract/auth-v1.yaml" > /tmp/base/auth-v1.yaml 2>/dev/null; then
+            echo "have_base=true" >> "$GITHUB_ENV"
+          else
+            echo "have_base=false" >> "$GITHUB_ENV"
+            echo "No base contract at ${{ github.event.pull_request.base.sha }}; skipping breaking-change check."
+          fi
+
+      - name: oasdiff breaking
+        if: env.have_base == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/contract:/specs" \
+            -v "/tmp/base:/base" \
+            tufin/oasdiff:v1.23.0@sha256:336775b5ea56631d1fcc38efa79aa5c7b52c9c3c97e3d4c9568d6682aeadd21b \
+            breaking /base/auth-v1.yaml /specs/auth-v1.yaml \
+            --fail-on ERR
