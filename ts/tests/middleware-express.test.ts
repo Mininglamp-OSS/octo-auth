@@ -203,7 +203,7 @@ describe('expressMiddleware — SpaceHeader enrichment', () => {
     expect(res.body).toBe(BODY_FORBIDDEN)
   })
 
-  it('pre-v2 (ContextUnknownServer): trusts the header', async () => {
+  it('pre-v2 (ContextUnknownServer): fail-closed forbidden (never trust unverified header)', async () => {
     handle = await startMockServer(async () => ({
       status: 200,
       // No context_included → unknown-server.
@@ -213,14 +213,19 @@ describe('expressMiddleware — SpaceHeader enrichment', () => {
     const mw = expressMiddleware({ verifier: v, spaceHeader: 'X-Space-Id' })
     const req = mkReq({
       authorization: 'Bearer sess-tok',
-      'x-space-id': 'trusted',
+      'x-space-id': 'attacker-chosen',
     })
     const res = mkRes()
-    await mw(req, res, () => {})
-    expect(req.principal?.spaceId).toBe('trusted')
+    let nextCalled = false
+    await mw(req, res, () => (nextCalled = true))
+    expect(nextCalled).toBe(false)
+    expect(res.statusCode).toBe(403)
+    expect(res.body).toBe(BODY_FORBIDDEN)
+    // Principal never gets attached on rejection.
+    expect(req.principal).toBeUndefined()
   })
 
-  it('ContextNotIncluded: trusts the header (v2 opt-out fallback)', async () => {
+  it('ContextNotIncluded: fail-closed forbidden (server declined context)', async () => {
     handle = await startMockServer(async () => ({
       status: 200,
       body: JSON.stringify({ uid: 'u1', context_included: false }),
@@ -229,11 +234,13 @@ describe('expressMiddleware — SpaceHeader enrichment', () => {
     const mw = expressMiddleware({ verifier: v, spaceHeader: 'X-Space-Id' })
     const req = mkReq({
       authorization: 'Bearer sess-tok',
-      'x-space-id': 'trusted',
+      'x-space-id': 'attacker-chosen',
     })
     const res = mkRes()
     await mw(req, res, () => {})
-    expect(req.principal?.spaceId).toBe('trusted')
+    expect(res.statusCode).toBe(403)
+    expect(res.body).toBe(BODY_FORBIDDEN)
+    expect(req.principal).toBeUndefined()
   })
 
   it('no spaceHeader configured → SpaceID stays untouched', async () => {

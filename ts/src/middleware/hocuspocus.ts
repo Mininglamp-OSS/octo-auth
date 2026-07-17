@@ -83,6 +83,23 @@ export function hocuspocusHook(opts: HocuspocusHookOptions): HocuspocusHook {
           sigKey: opts.layer2.sigKey,
           sigAlg: opts.layer2.sigAlg ?? AlgHS256,
         })
+        // Enforce document binding: reject when the token's document_name
+        // claim does not match the target document. Empty document_name in
+        // the claim is treated as invalid — an unbound token cannot be
+        // relied on for a document-scoped decision. Prevents cross-document
+        // authorization bypass (token minted for doc A replayed on doc B).
+        if (!claims.documentName) {
+          throw new OctoAuthError(
+            'invalid-credential',
+            'layer2: token missing document_name claim',
+          )
+        }
+        if (claims.documentName !== data.documentName) {
+          throw new OctoAuthError(
+            'forbidden',
+            'layer2: token document_name does not match target document',
+          )
+        }
         const currentEpoch = await opts.layer2.getPermissionEpoch(
           data.documentName,
         )

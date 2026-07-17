@@ -97,6 +97,50 @@ describe('applyDefaults', () => {
     expect(r.logger).toBe(logger)
     expect(r.errorMapper).toBe(errorMapper)
   })
+
+  it('coerces TTL == 0 to the documented default (parity with Go SDK)', () => {
+    // Without coercion, cache.set would treat 0 as "no expiry" → permanent
+    // auth cache → unbounded SSO-revocation window.
+    const r = applyDefaults({
+      baseUrl: 'https://octo.test',
+      sessionTtlMs: 0,
+      botTtlMs: 0,
+      apiKeyTtlMs: 0,
+      negativeTtlMs: 0,
+    })
+    expect(r.sessionTtlMs).toBe(DEFAULT_SESSION_TTL_MS)
+    expect(r.botTtlMs).toBe(DEFAULT_BOT_TTL_MS)
+    expect(r.apiKeyTtlMs).toBe(DEFAULT_API_KEY_TTL_MS)
+    expect(r.negativeTtlMs).toBe(DEFAULT_NEGATIVE_TTL_MS)
+  })
+
+  it('coerces negative TTL to the documented default', () => {
+    const r = applyDefaults({
+      baseUrl: 'https://octo.test',
+      sessionTtlMs: -1,
+      botTtlMs: -100,
+      apiKeyTtlMs: -1000,
+      negativeTtlMs: -5,
+    })
+    expect(r.sessionTtlMs).toBe(DEFAULT_SESSION_TTL_MS)
+    expect(r.botTtlMs).toBe(DEFAULT_BOT_TTL_MS)
+    expect(r.apiKeyTtlMs).toBe(DEFAULT_API_KEY_TTL_MS)
+    expect(r.negativeTtlMs).toBe(DEFAULT_NEGATIVE_TTL_MS)
+  })
+
+  it('respects positive TTL values verbatim', () => {
+    const r = applyDefaults({
+      baseUrl: 'https://octo.test',
+      sessionTtlMs: 12_345,
+      botTtlMs: 67_890,
+      apiKeyTtlMs: 111,
+      negativeTtlMs: 222,
+    })
+    expect(r.sessionTtlMs).toBe(12_345)
+    expect(r.botTtlMs).toBe(67_890)
+    expect(r.apiKeyTtlMs).toBe(111)
+    expect(r.negativeTtlMs).toBe(222)
+  })
 })
 
 describe('consoleLogger', () => {

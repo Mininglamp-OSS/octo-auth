@@ -12,6 +12,8 @@ package internalhelpers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -174,13 +176,16 @@ func (c *NotifyClient) Send(ctx context.Context, req NotifyRequest) error {
 	return nil
 }
 
-// maskToken returns a short prefix + "..." suitable for slog. Full-length
-// masking is intentional — even 8 characters of an internal shared secret
-// should not appear in application logs. Callers who need higher-fidelity
-// diagnostics should use their metrics pipeline, not the logger.
+// maskToken returns a non-reversible fingerprint of the internal shared
+// secret suitable for slog. Leaking any prefix of the raw token would
+// shrink the guess-space of a long-lived shared secret and correlate the
+// secret across log stores, so a SHA-256 truncation is used instead. The
+// output is stable for a given token (correlation-friendly) but reveals
+// no material of the underlying secret.
 func maskToken(t string) string {
-	if len(t) < 8 {
-		return "***"
+	if t == "" {
+		return ""
 	}
-	return t[:8] + "..."
+	sum := sha256.Sum256([]byte(t))
+	return "sha256:" + hex.EncodeToString(sum[:3])
 }

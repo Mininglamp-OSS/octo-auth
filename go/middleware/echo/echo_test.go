@@ -142,7 +142,7 @@ func TestEchoSpaceHeaderIncludedReject(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
-func TestEchoSpaceHeaderPreV2(t *testing.T) {
+func TestEchoSpaceHeaderPreV2FailClosed(t *testing.T) {
 	stub := &stubVerifier{
 		kind: octoauth.KindSession,
 		principal: &octoauth.Principal{
@@ -155,8 +155,8 @@ func TestEchoSpaceHeaderPreV2(t *testing.T) {
 	}
 	e, cap := newSessionApp(Options{Verifier: stub, SpaceHeader: "X-Space-Id"})
 	w := doGET(e, map[string]string{"token": "tok", "X-Space-Id": "s-1"})
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "s-1", cap.last.SpaceID)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	assert.Nil(t, cap.last, "principal MUST NOT be attached when unverified header is rejected")
 }
 
 func TestEchoCloneIsolation(t *testing.T) {

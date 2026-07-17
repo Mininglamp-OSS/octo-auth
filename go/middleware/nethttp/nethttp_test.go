@@ -143,7 +143,7 @@ func TestNetHTTPSpaceHeaderIncludedReject(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
-func TestNetHTTPSpaceHeaderPreV2(t *testing.T) {
+func TestNetHTTPSpaceHeaderPreV2FailClosed(t *testing.T) {
 	stub := &stubVerifier{
 		kind: octoauth.KindSession,
 		principal: &octoauth.Principal{
@@ -154,8 +154,8 @@ func TestNetHTTPSpaceHeaderPreV2(t *testing.T) {
 	}
 	h, cap := newSessionHandler(Options{Verifier: stub, SpaceHeader: "X-Space-Id"})
 	w := doGET(h, map[string]string{"token": "tok", "X-Space-Id": "s-1"})
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "s-1", cap.last.SpaceID)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	assert.Nil(t, cap.last, "principal MUST NOT be attached when unverified header is rejected")
 }
 
 func TestNetHTTPCloneIsolation(t *testing.T) {

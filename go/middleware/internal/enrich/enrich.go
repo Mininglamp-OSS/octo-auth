@@ -23,9 +23,11 @@ type HeaderReader func(name string) string
 //  3. Based on Principal.Context.Kind:
 //     - ContextIncluded (v2 server): the sid MUST be in Context.Spaces or
 //     the request is rejected with ErrForbidden (fail-closed).
-//     - ContextNotIncluded / ContextUnknownServer (pre-v2 fallback):
-//     trust the header and set SpaceID. Callers should defense-in-depth
-//     with owner_uid SQL filters.
+//     - ContextNotIncluded / ContextUnknownServer: fail-closed — the SDK
+//     refuses to bind an unverified client-supplied space id. This matches
+//     the wire contract (contract/auth-v1.yaml §fail-closed rules) and
+//     prevents cross-space authorization bypass on the default path where
+//     a v3 server omits context_included via omitempty.
 //     - ContextNotRequested: no-op (defensive; should never hit here).
 //
 // The mutation on p is direct — callers should Clone() before invoking this
@@ -52,7 +54,16 @@ func SpaceFromHeader(p *octoauth.Principal, header string, read HeaderReader) er
 		}
 		p.SpaceID = sid
 	case octoauth.ContextNotIncluded, octoauth.ContextUnknownServer:
-		p.SpaceID = sid
+		// Fail-closed: the server did not affirmatively confirm the caller's
+		// space membership, so trusting the client-supplied header would
+		// enable cross-space authorization bypass. Callers that need to
+		// operate against pre-v2 servers must resolve space membership
+		// out-of-band before dispatching.
+		return &octoauth.Error{
+			Kind:     octoauth.ErrKindForbidden,
+			Message:  "requested space is not in principal's authorized set",
+			Verifier: octoauth.KindSession,
+		}
 	case octoauth.ContextNotRequested:
 		// no-op: not enrichable
 	}

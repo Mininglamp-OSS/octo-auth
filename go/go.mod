@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/WuKongIM/WuKongIM v1.2.6
 	github.com/gin-gonic/gin v1.12.0
-	github.com/golang-jwt/jwt/v5 v5.2.0
+	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/labstack/echo/v4 v4.15.4
 )

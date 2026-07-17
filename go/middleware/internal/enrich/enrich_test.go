@@ -73,7 +73,9 @@ func TestSpaceFromHeaderIncludedHardCheckReject(t *testing.T) {
 	assert.Empty(t, p.SpaceID, "SpaceID MUST NOT be set when membership check fails")
 }
 
-func TestSpaceFromHeaderNotIncludedPreV2Trust(t *testing.T) {
+func TestSpaceFromHeaderNotIncludedFailClosed(t *testing.T) {
+	// ContextNotIncluded → SDK refuses to bind an unverified header. Callers
+	// operating against pre-v2 servers must resolve membership out-of-band.
 	p := &octoauth.Principal{
 		Kind: octoauth.KindSession,
 		Context: octoauth.PrincipalContext{
@@ -81,11 +83,16 @@ func TestSpaceFromHeaderNotIncludedPreV2Trust(t *testing.T) {
 		},
 	}
 	read := staticReader(map[string]string{"X-Space-Id": "s-1"})
-	require.NoError(t, SpaceFromHeader(p, "X-Space-Id", read))
-	assert.Equal(t, "s-1", p.SpaceID)
+	err := SpaceFromHeader(p, "X-Space-Id", read)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, octoauth.ErrForbidden))
+	assert.Empty(t, p.SpaceID, "SpaceID MUST NOT be set when server did not confirm membership")
 }
 
-func TestSpaceFromHeaderUnknownServerPreV2Trust(t *testing.T) {
+func TestSpaceFromHeaderUnknownServerFailClosed(t *testing.T) {
+	// ContextUnknownServer is reachable against a current v3 server that
+	// omitted context_included via omitempty. Fail-closed is required by
+	// the wire contract to prevent cross-space authorization bypass.
 	p := &octoauth.Principal{
 		Kind: octoauth.KindSession,
 		Context: octoauth.PrincipalContext{
@@ -93,8 +100,10 @@ func TestSpaceFromHeaderUnknownServerPreV2Trust(t *testing.T) {
 		},
 	}
 	read := staticReader(map[string]string{"X-Space-Id": "s-1"})
-	require.NoError(t, SpaceFromHeader(p, "X-Space-Id", read))
-	assert.Equal(t, "s-1", p.SpaceID)
+	err := SpaceFromHeader(p, "X-Space-Id", read)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, octoauth.ErrForbidden))
+	assert.Empty(t, p.SpaceID, "SpaceID MUST NOT be set on unverified server context")
 }
 
 func TestSpaceFromHeaderNotRequestedNoOp(t *testing.T) {

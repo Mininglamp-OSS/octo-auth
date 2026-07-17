@@ -152,18 +152,36 @@ describe('NotifyClient — send', () => {
         /test-secret-super-long-token-value-1234/,
       )
     }
-    // But we should see the masked hint.
+    // But we should see the masked hint (sha256:xxxxxx fingerprint of the token).
     const flat = JSON.stringify(recorded)
-    expect(flat).toContain('test-sec...')
+    expect(flat).toMatch(/sha256:[0-9a-f]{6}/)
+    expect(flat).toContain(maskToken('test-secret-super-long-token-value-1234'))
   })
 })
 
 describe('maskToken', () => {
-  it('returns *** for tokens shorter than 8 chars', () => {
-    expect(maskToken('short')).toBe('***')
+  it('returns empty string for empty input', () => {
+    expect(maskToken('')).toBe('')
   })
 
-  it('returns first 8 chars + ...', () => {
-    expect(maskToken('abcdefghijklm')).toBe('abcdefgh...')
+  it('returns sha256:<6hex> fingerprint for non-empty input', () => {
+    expect(maskToken('short')).toMatch(/^sha256:[0-9a-f]{6}$/)
+    expect(maskToken('abcdefghijklm')).toMatch(/^sha256:[0-9a-f]{6}$/)
+  })
+
+  it('is stable for the same input (correlation-friendly)', () => {
+    expect(maskToken('abc')).toBe(maskToken('abc'))
+  })
+
+  it('differs for different inputs', () => {
+    expect(maskToken('abc')).not.toBe(maskToken('abd'))
+  })
+
+  it('leaks no prefix of the raw secret', () => {
+    const raw = 'XYZ-live-Kj8mNqPwRt7VaBcDeF'
+    const masked = maskToken(raw)
+    expect(masked).not.toContain(raw)
+    expect(masked).not.toContain(raw.slice(0, 8))
+    expect(masked).not.toContain(raw.slice(0, 4))
   })
 })

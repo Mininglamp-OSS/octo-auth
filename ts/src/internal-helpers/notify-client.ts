@@ -6,6 +6,7 @@
  * empty — a "fail-closed at startup" posture matching Go's NewNotifyClient.
  */
 
+import { createHash } from 'node:crypto'
 import type { Logger } from '../config.js'
 import { consoleLogger } from '../config.js'
 
@@ -169,11 +170,14 @@ export function newNotifyClient(cfg: NotifyConfig): NotifyClient {
 }
 
 /**
- * maskToken returns a short prefix + "..." suitable for logs. Even 8
- * characters of an internal shared secret should not appear in application
- * logs verbatim.
+ * maskToken returns a non-reversible fingerprint of the internal shared
+ * secret suitable for logs. Leaking any prefix of the raw token would
+ * shrink the guess-space of a long-lived shared secret, so a SHA-256
+ * truncation is used instead. Stable for a given input; reveals no
+ * material of the underlying secret.
  */
 export function maskToken(t: string): string {
-  if (t.length < 8) return '***'
-  return t.slice(0, 8) + '...'
+  if (!t) return ''
+  const digest = createHash('sha256').update(t).digest('hex')
+  return `sha256:${digest.slice(0, 6)}`
 }

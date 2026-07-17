@@ -107,7 +107,10 @@ export function expressMiddleware(
  * X-Space-Id enrichment. Matches Go's middleware/internal/enrich/enrich.go.
  *
  *   - included: sid MUST be in principal.context.spaces → else forbidden
- *   - not-included / unknown-server: trust the header
+ *   - not-included / unknown-server: fail-closed — the SDK refuses to bind
+ *     an unverified client-supplied space id, matching the wire contract
+ *     (contract/auth-v1.yaml §fail-closed rules). Reachable on default path
+ *     when a v3 server omits context_included via omitempty.
  *   - not-requested: no-op (defensive)
  */
 function enrichSpaceFromHeader(
@@ -132,8 +135,11 @@ function enrichSpaceFromHeader(
     }
     case 'not-included':
     case 'unknown-server':
-      principal.spaceId = sid
-      return
+      throw new OctoAuthError(
+        'forbidden',
+        "requested space is not in principal's authorized set",
+        { verifier: KindSession },
+      )
     case 'not-requested':
       return
   }

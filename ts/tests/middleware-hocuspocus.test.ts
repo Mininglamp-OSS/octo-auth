@@ -92,6 +92,51 @@ describe('hocuspocusHook — layer2 hot path', () => {
     expect(out.user.uid).toBe('u2')
     expect('role' in out.user).toBe(false)
   })
+
+  it('rejects cross-document replay (token for doc-A opened on doc-B)', async () => {
+    // Token minted for doc-A. Attacker replays it to open a connection
+    // for doc-B. The doc binding MUST be enforced on the verify path.
+    const token = await issueShortLivedToken({
+      claims: { uid: 'u1', documentName: 'doc-A', role: 'writer', permissionEpoch: 3 },
+      sigKey,
+      sigAlg: AlgHS256,
+      ttlSeconds: 60,
+    })
+    const hook = hocuspocusHook({
+      layer2: { sigKey, getPermissionEpoch: () => 0 },
+    })
+    try {
+      await hook.onAuthenticate({ token, documentName: 'doc-B' })
+      expect.fail('should have rejected cross-document token')
+    } catch (err) {
+      expect(err).toBeInstanceOf(OctoAuthError)
+      expect((err as OctoAuthError).kind).toBe('forbidden')
+      expect((err as Error).message).toMatch(/document_name/)
+    }
+  })
+
+  it('rejects token with empty documentName claim (unbound token)', async () => {
+    // Attacker crafts a token with empty document_name (bypasses the
+    // per-document scope). Empty claim MUST be rejected — an unbound token
+    // cannot back a document-scoped authorization decision.
+    const token = await issueShortLivedToken({
+      claims: { uid: 'u1', documentName: '', role: 'writer', permissionEpoch: 3 },
+      sigKey,
+      sigAlg: AlgHS256,
+      ttlSeconds: 60,
+    })
+    const hook = hocuspocusHook({
+      layer2: { sigKey, getPermissionEpoch: () => 0 },
+    })
+    try {
+      await hook.onAuthenticate({ token, documentName: 'doc-1' })
+      expect.fail('should have rejected empty documentName')
+    } catch (err) {
+      expect(err).toBeInstanceOf(OctoAuthError)
+      expect((err as OctoAuthError).kind).toBe('invalid-credential')
+      expect((err as Error).message).toMatch(/missing document_name/)
+    }
+  })
 })
 
 describe('hocuspocusHook — verifier slow path', () => {

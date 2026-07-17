@@ -147,10 +147,23 @@ export function applyDefaults(cfg: Config): ResolvedConfig {
   if (cfg.logger === undefined) cfg.logger = consoleLogger
   if (cfg.errorMapper === undefined) cfg.errorMapper = defaultErrorMapper
   if (cfg.timeoutMs === undefined) cfg.timeoutMs = DEFAULT_HTTP_TIMEOUT_MS
-  if (cfg.sessionTtlMs === undefined) cfg.sessionTtlMs = DEFAULT_SESSION_TTL_MS
-  if (cfg.botTtlMs === undefined) cfg.botTtlMs = DEFAULT_BOT_TTL_MS
-  if (cfg.apiKeyTtlMs === undefined) cfg.apiKeyTtlMs = DEFAULT_API_KEY_TTL_MS
-  if (cfg.negativeTtlMs === undefined) cfg.negativeTtlMs = DEFAULT_NEGATIVE_TTL_MS
+  // TTL fields: undefined OR <= 0 → default. Matches Go SDK's applyDefaults
+  // (config.go), which treats TTL == 0 as "use default". Without this coercion
+  // an explicit `sessionTtlMs: 0` would flow into cache.set() and, per the
+  // cache contract (ttlMs <= 0 → no expiry), create a permanent auth cache
+  // — an unbounded SSO-revocation window.
+  if (cfg.sessionTtlMs === undefined || cfg.sessionTtlMs <= 0) {
+    cfg.sessionTtlMs = DEFAULT_SESSION_TTL_MS
+  }
+  if (cfg.botTtlMs === undefined || cfg.botTtlMs <= 0) {
+    cfg.botTtlMs = DEFAULT_BOT_TTL_MS
+  }
+  if (cfg.apiKeyTtlMs === undefined || cfg.apiKeyTtlMs <= 0) {
+    cfg.apiKeyTtlMs = DEFAULT_API_KEY_TTL_MS
+  }
+  if (cfg.negativeTtlMs === undefined || cfg.negativeTtlMs <= 0) {
+    cfg.negativeTtlMs = DEFAULT_NEGATIVE_TTL_MS
+  }
   // undefined → default true; explicit false is respected.
   if (cfg.requestIncludeContext === undefined) cfg.requestIncludeContext = true
   if (cfg.hashCacheKey === undefined) cfg.hashCacheKey = true

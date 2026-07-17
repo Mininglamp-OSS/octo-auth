@@ -190,7 +190,7 @@ func TestGinSpaceHeaderV2HardCheckReject(t *testing.T) {
 	assert.Nil(t, cap.last)
 }
 
-func TestGinSpaceHeaderPreV2Trust(t *testing.T) {
+func TestGinSpaceHeaderPreV2FailClosed(t *testing.T) {
 	stub := &stubVerifier{
 		kind: octoauth.KindSession,
 		principal: &octoauth.Principal{
@@ -207,8 +207,8 @@ func TestGinSpaceHeaderPreV2Trust(t *testing.T) {
 	})
 
 	w := doGET(engine, map[string]string{"token": "tok", "X-Space-Id": "s-arbitrary"})
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "s-arbitrary", cap.last.SpaceID)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	assert.Nil(t, cap.last, "principal MUST NOT be attached when unverified header is rejected")
 }
 
 // TestGinCloneIsolatesConcurrentMutations proves the middleware clones

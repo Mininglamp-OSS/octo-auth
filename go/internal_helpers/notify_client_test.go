@@ -254,10 +254,21 @@ func TestNotifyClientNoTokenLeakInLog(t *testing.T) {
 }
 
 func TestMaskTokenShortInputs(t *testing.T) {
-	assert.Equal(t, "***", maskToken(""))
-	assert.Equal(t, "***", maskToken("short"))
-	assert.Equal(t, "12345678...", maskToken("12345678"))
-	assert.Equal(t, "12345678...", maskToken("123456789"))
+	// Empty stays empty (nothing to fingerprint).
+	assert.Equal(t, "", maskToken(""))
+	// Non-empty inputs → sha256:<6 hex chars> (24-bit fingerprint).
+	assert.Regexp(t, `^sha256:[0-9a-f]{6}$`, maskToken("short"))
+	assert.Regexp(t, `^sha256:[0-9a-f]{6}$`, maskToken("12345678"))
+	// Same input → same fingerprint (correlation-friendly).
+	assert.Equal(t, maskToken("abc"), maskToken("abc"))
+	// Different inputs → different fingerprints (with overwhelming probability).
+	assert.NotEqual(t, maskToken("abc"), maskToken("abd"))
+	// Fingerprint MUST NOT contain the raw secret or a meaningful prefix.
+	raw := "XYZ-live-Kj8mNqPwRt7VaBcDeF"
+	masked := maskToken(raw)
+	assert.NotContains(t, masked, raw)
+	assert.NotContains(t, masked, raw[:8])
+	assert.NotContains(t, masked, raw[:4])
 }
 
 // TestNotifyClientAcceptsWideStatusRange verifies 2xx statuses other than
