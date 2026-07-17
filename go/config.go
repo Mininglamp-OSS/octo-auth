@@ -43,6 +43,12 @@ type Config struct {
 
 	// HTTPClient is the transport used by every verifier. If nil, a
 	// fresh &http.Client{Timeout: DefaultHTTPTimeout} is installed.
+	//
+	// applyDefaults enforces CheckRedirect on this client (fail-closed on
+	// 3xx) even when the caller supplies their own — verify POST bodies
+	// carry raw credentials, and Go's default follow-10-hops behavior
+	// would replay them to a 307/308 Location. Callers who need to handle
+	// redirects out-of-band must implement that outside the verify path.
 	HTTPClient *http.Client
 
 	// Cache backs verify-result memoization. If nil, an in-mem LRU sized to
@@ -106,6 +112,16 @@ func applyDefaults(cfg *Config) {
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
+		}
+	} else if cfg.HTTPClient.CheckRedirect == nil {
+		// The user brought their own *http.Client but didn't override
+		// CheckRedirect — Go's default is to follow up to 10 redirects.
+		// Same credential-leak risk as the nil-client branch above; enforce
+		// the same fail-closed policy. This mutates the caller's client
+		// struct in place, which is documented on the Config.HTTPClient
+		// field. Reviewer P1-F.
+		cfg.HTTPClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
 		}
 	}
 	if cfg.Cache == nil {

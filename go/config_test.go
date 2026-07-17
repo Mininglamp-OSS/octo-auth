@@ -134,6 +134,42 @@ func TestApplyDefaultsInstallsRedirectGuard(t *testing.T) {
 	assert.ErrorIs(t, err, http.ErrUseLastResponse, "CheckRedirect must return http.ErrUseLastResponse to halt redirect chain")
 }
 
+// TestApplyDefaultsInstallsRedirectGuardOnUserClient guards reviewer P1-F:
+// a caller-supplied HTTPClient MUST also get the CheckRedirect guard so
+// the credential-leak protection does not depend on caller diligence.
+// applyDefaults mutates the caller's client in place — documented on
+// Config.HTTPClient.
+func TestApplyDefaultsInstallsRedirectGuardOnUserClient(t *testing.T) {
+	userClient := &http.Client{Timeout: 3 * time.Second} // no CheckRedirect
+	cfg := &Config{
+		BaseURL:    "http://example.com",
+		HTTPClient: userClient,
+	}
+	applyDefaults(cfg)
+
+	// The exact same pointer is retained (no clone).
+	assert.Same(t, userClient, cfg.HTTPClient)
+	require.NotNil(t, userClient.CheckRedirect, "user-supplied client MUST have CheckRedirect set by applyDefaults")
+	err := userClient.CheckRedirect(nil, nil)
+	assert.ErrorIs(t, err, http.ErrUseLastResponse)
+}
+
+// TestApplyDefaultsPreservesUserCheckRedirect: if the caller supplied their
+// own CheckRedirect, applyDefaults must NOT overwrite it — the caller
+// opted into a custom redirect policy on purpose. (E.g. a proxy that
+// follows same-origin 3xx internally.)
+func TestApplyDefaultsPreservesUserCheckRedirect(t *testing.T) {
+	sentinel := errors.New("caller's policy")
+	userCheck := func(*http.Request, []*http.Request) error { return sentinel }
+	userClient := &http.Client{CheckRedirect: userCheck}
+	cfg := &Config{BaseURL: "http://example.com", HTTPClient: userClient}
+	applyDefaults(cfg)
+
+	// The custom policy survives.
+	got := userClient.CheckRedirect(nil, nil)
+	assert.ErrorIs(t, got, sentinel, "applyDefaults MUST NOT overwrite a non-nil CheckRedirect")
+}
+
 func TestDefaultErrorMapper(t *testing.T) {
 	tests := []struct {
 		name       string

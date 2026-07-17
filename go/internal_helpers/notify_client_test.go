@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -306,4 +307,94 @@ func TestNotifyClientRawBodyRoundtrip(t *testing.T) {
 	reqs := ms.all()
 	require.Len(t, reqs, 1)
 	assert.Equal(t, string(raw), strings.TrimSpace(string(reqs[0].body)))
+}
+
+// TestNotifyClientRejectsRedirect (P1-E) guards against X-Internal-Token
+// leakage via 3xx: Go's default client follows redirects and does NOT
+// strip custom headers on cross-origin hops, so a compromised or
+// misconfigured notify upstream that replies 307/308 would replay the
+// POST — including X-Internal-Token — to the attacker-controlled
+// Location. The default client MUST refuse.
+func TestNotifyClientRejectsRedirect(t *testing.T) {
+	var attackerHits atomic.Int32
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(attacker.Close)
+
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", attacker.URL+"/steal")
+		w.WriteHeader(http.StatusTemporaryRedirect) // 307
+	}))
+	t.Cleanup(victim.Close)
+
+	t.Setenv("TEST_TOK", "shared-secret-value")
+	c, err := NewNotifyClient(NotifyConfig{
+		BaseURL:     victim.URL,
+		TokenEnvVar: "TEST_TOK",
+	})
+	require.NoError(t, err)
+
+	err = c.Send(context.Background(), NotifyRequest{ChannelID: "c", Message: "m"})
+	require.Error(t, err, "3xx must surface as error, not silently follow")
+	assert.Equal(t, int32(0), attackerHits.Load(),
+		"attacker MUST NOT receive the redirected POST — X-Internal-Token leak blocked")
+}
+
+// TestNotifyClientRejectsRedirectWithUserSuppliedClient (P1-E parity with
+// P1-F on the verify path): a caller who brings their own *http.Client
+// must still get the redirect guard applied, so the safety property does
+// not depend on caller diligence.
+func TestNotifyClientRejectsRedirectWithUserSuppliedClient(t *testing.T) {
+	var attackerHits atomic.Int32
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(attacker.Close)
+
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", attacker.URL+"/steal")
+		w.WriteHeader(http.StatusPermanentRedirect) // 308
+	}))
+	t.Cleanup(victim.Close)
+
+	t.Setenv("TEST_TOK", "another-shared-secret")
+	userClient := &http.Client{Timeout: 2 * time.Second} // no CheckRedirect
+	c, err := NewNotifyClient(NotifyConfig{
+		BaseURL:     victim.URL,
+		TokenEnvVar: "TEST_TOK",
+		HTTPClient:  userClient,
+	})
+	require.NoError(t, err)
+	// Sanity: SDK installed the guard on the user-supplied client.
+	require.NotNil(t, userClient.CheckRedirect,
+		"NewNotifyClient MUST install CheckRedirect on user-supplied client")
+
+	err = c.Send(context.Background(), NotifyRequest{ChannelID: "c", Message: "m"})
+	require.Error(t, err)
+	assert.Equal(t, int32(0), attackerHits.Load(), "308 must also be blocked on user client")
+}
+
+// TestNotifyClientDrainsBoundedBody (P1-G) proves the drain is capped so a
+// misbehaving upstream cannot OOM the consumer. Configures a server that
+// replies 200 with a body larger than maxNotifyBodyBytes; Send returns
+// nil (2xx status) but the drain stops at the cap.
+func TestNotifyClientDrainsBoundedBody(t *testing.T) {
+	// Body 2x the cap.
+	oversized := strings.Repeat("A", 2*maxNotifyBodyBytes)
+	ms := newMockNotifyServer(t)
+	ms.setReply(http.StatusOK, oversized)
+
+	t.Setenv("TEST_TOK", "tok")
+	c, err := NewNotifyClient(NotifyConfig{
+		BaseURL:     ms.srv.URL,
+		TokenEnvVar: "TEST_TOK",
+	})
+	require.NoError(t, err)
+
+	// Should return nil (200 OK) despite oversized body — drain bounded.
+	err = c.Send(context.Background(), NotifyRequest{ChannelID: "c", Message: "m"})
+	require.NoError(t, err)
 }

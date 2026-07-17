@@ -147,6 +147,44 @@ func TestDoVerifyRequestRejectsPermanentRedirect(t *testing.T) {
 	assert.Empty(t, attacker.Requests(), "308 must also be blocked (credential leak)")
 }
 
+// TestDoVerifyRequestBoundedBody guards reviewer P1-G: a malicious or
+// compromised upstream that streams a response body larger than
+// maxVerifyBodyBytes MUST NOT be able to OOM the SDK consumer. The
+// oversize is surfaced as InfraFailure rather than absorbed.
+func TestDoVerifyRequestBoundedBody(t *testing.T) {
+	oversized := strings.Repeat("A", maxVerifyBodyBytes+1024) // just over cap
+	ms := testhelpers.NewMockServer(t)
+	ms.SetResponse("/x", http.StatusOK, oversized)
+	cfg := testConfig(ms.URL())
+
+	_, err := doVerifyRequest(context.Background(), cfg, "/x", map[string]string{}, KindSession)
+	require.Error(t, err)
+	var authErr *Error
+	require.ErrorAs(t, err, &authErr)
+	assert.Equal(t, ErrKindInfraFailure, authErr.Kind)
+	assert.Contains(t, authErr.Message, "exceeds")
+}
+
+// TestDoVerifyRequestBodyAtCapSucceeds proves the LimitReader's off-by-one
+// is correct: a body exactly maxVerifyBodyBytes bytes still parses.
+func TestDoVerifyRequestBodyAtCapSucceeds(t *testing.T) {
+	// Build a JSON body whose length is exactly maxVerifyBodyBytes. Pad the
+	// UID string to make up the remaining bytes.
+	prefix := `{"uid":"`
+	suffix := `"}`
+	pad := strings.Repeat("x", maxVerifyBodyBytes-len(prefix)-len(suffix))
+	body := prefix + pad + suffix
+	require.Len(t, body, maxVerifyBodyBytes)
+
+	ms := testhelpers.NewMockServer(t)
+	ms.SetResponse("/x", http.StatusOK, body)
+	cfg := testConfig(ms.URL())
+
+	got, err := doVerifyRequest(context.Background(), cfg, "/x", map[string]string{}, KindSession)
+	require.NoError(t, err, "body of exactly maxVerifyBodyBytes MUST be accepted")
+	require.NotNil(t, got)
+}
+
 // TestNewVerifyContextCacheKeyEncodesIncludeContext guards reviewer P1-C:
 // two verifier instances that share a Cache but disagree on
 // RequestIncludeContext MUST produce different cache keys, otherwise a

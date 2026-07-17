@@ -30,6 +30,13 @@ const (
 // diagnostics for local debugging.
 const maxLoggedBodyBytes = 200
 
+// maxVerifyBodyBytes bounds how many bytes of the verify HTTP response are
+// read into memory. Verify responses are ~1-10 KB in practice; the 1 MiB
+// ceiling is ~100x that. A malicious or compromised upstream that streams
+// a multi-GB body cannot OOM the SDK consumer — the read is halted and
+// the request is failed as an InfraFailure. Reviewer P1-G.
+const maxVerifyBodyBytes = 1 << 20 // 1 MiB
+
 // doVerifyRequest builds and executes a JSON-body POST against
 // cfg.BaseURL+endpoint (endpoint may include a query string, e.g.
 // "/v1/auth/verify?include=context"). On success it returns the raw response
@@ -91,12 +98,24 @@ func doVerifyRequest(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Bounded read: cap the response body at maxVerifyBodyBytes+1 so we can
+	// tell "hit the cap" from "clean read up to the cap". A body that
+	// stayed within the cap is decoded as usual; overflow is surfaced as
+	// InfraFailure to protect the SDK consumer from an OOM by a malicious
+	// or compromised upstream. Reviewer P1-G.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxVerifyBodyBytes+1))
 	if err != nil {
 		return nil, &Error{
 			Kind:     ErrKindInfraFailure,
 			Message:  "read verify response body",
 			Cause:    err,
+			Verifier: verifier,
+		}
+	}
+	if len(body) > maxVerifyBodyBytes {
+		return nil, &Error{
+			Kind:     ErrKindInfraFailure,
+			Message:  fmt.Sprintf("verify response body exceeds %d bytes", maxVerifyBodyBytes),
 			Verifier: verifier,
 		}
 	}

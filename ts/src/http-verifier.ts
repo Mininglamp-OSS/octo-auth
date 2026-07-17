@@ -29,6 +29,59 @@ export const VERIFY_RESULT_INFRA = 'error'
 const MAX_LOGGED_BODY_BYTES = 200
 
 /**
+ * MAX_VERIFY_BODY_BYTES bounds how many bytes of the verify HTTP response
+ * are read into memory. Verify responses are ~1-10 KB in practice; the
+ * 1 MiB ceiling is ~100x that. A malicious or compromised upstream that
+ * streams a multi-GB body cannot OOM the SDK consumer — the read is
+ * halted and the request is failed as an InfraFailure. Reviewer P1-G.
+ *
+ * TS-only P1-F note: this file passes `redirect: 'error'` to fetch to
+ * block credential leaks via 307/308. When the caller supplies a
+ * `cfg.fetch` implementation, that override applies at the fetch() call
+ * itself and cannot be re-enforced by the SDK the way Go's applyDefaults
+ * mutates CheckRedirect on a caller-supplied http.Client. Callers who
+ * supply their own fetch MUST preserve the { redirect: 'error' } option;
+ * a passthrough that forwards RequestInit unchanged is sufficient.
+ */
+const MAX_VERIFY_BODY_BYTES = 1 << 20 // 1 MiB
+
+/**
+ * readTextBounded reads resp.body as UTF-8 text, halting when the
+ * cumulative byte count exceeds `maxBytes`. On overflow it cancels the
+ * reader and throws — the caller maps this to an InfraFailure.
+ */
+async function readTextBounded(
+  resp: Response,
+  maxBytes: number,
+): Promise<string> {
+  if (!resp.body) return ''
+  const reader = resp.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        try { await reader.cancel() } catch { /* ignore */ }
+        throw new Error(`response body exceeds ${maxBytes} bytes`)
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* ignore */ }
+  }
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const c of chunks) {
+    merged.set(c, offset)
+    offset += c.byteLength
+  }
+  return new TextDecoder('utf-8').decode(merged)
+}
+
+/**
  * doVerifyRequest builds and executes a JSON-body POST against
  * cfg.baseUrl + endpoint. On success returns the parsed JSON body; on failure
  * throws a typed OctoAuthError.
@@ -90,7 +143,7 @@ export async function doVerifyRequest(
 
   let bodyText: string
   try {
-    bodyText = await resp.text()
+    bodyText = await readTextBounded(resp, MAX_VERIFY_BODY_BYTES)
   } catch (err) {
     throw new OctoAuthError('infra-failure', 'read verify response body', {
       cause: err,

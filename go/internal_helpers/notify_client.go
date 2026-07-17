@@ -30,6 +30,13 @@ import (
 // matter.
 const DefaultNotifyTimeout = 10 * time.Second
 
+// maxNotifyBodyBytes bounds how many bytes of the notify HTTP response are
+// drained. Notify responses are effectively empty (status-only contract) —
+// 64 KiB is orders of magnitude over any legitimate reply. The cap
+// prevents a malicious/compromised upstream from OOM-ing the SDK
+// consumer via an unbounded body stream. Reviewer P1-G.
+const maxNotifyBodyBytes = 64 << 10 // 64 KiB
+
 // NotifyConfig configures a [NotifyClient].
 //
 // Required fields:
@@ -93,6 +100,20 @@ func NewNotifyClient(cfg NotifyConfig) (*NotifyClient, error) {
 	client := cfg.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
+	}
+	// Fail-closed on 3xx: the notify POST carries X-Internal-Token, a
+	// long-lived shared secret. Go's default client follows 10 redirects
+	// and — unlike the Authorization / Cookie header — does NOT strip
+	// custom headers on cross-origin hops, so a redirecting proxy or
+	// compromised upstream could steal the token by replying with a 307/
+	// 308 whose Location points at attacker infrastructure. Applied to
+	// user-supplied clients too (matching applyDefaults' guarantee on the
+	// verify path) so the safety property doesn't depend on caller
+	// diligence. Reviewer P1-E.
+	if client.CheckRedirect == nil {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -161,8 +182,9 @@ func (c *NotifyClient) Send(ctx context.Context, req NotifyRequest) error {
 		return fmt.Errorf("octoauth/internal_helpers: notify request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	// Drain the body so the connection can be reused.
-	_, _ = io.Copy(io.Discard, resp.Body)
+	// Drain the body so the connection can be reused, bounded so a
+	// misbehaving upstream cannot OOM the SDK consumer. Reviewer P1-G.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxNotifyBodyBytes))
 
 	c.logger.Debug("octoauth/internal_helpers: notify sent",
 		slog.String("endpoint", c.path),

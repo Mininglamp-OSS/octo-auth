@@ -182,6 +182,22 @@ describe('sessionVerifier — error status mapping', () => {
     }
   })
 
+  // Reviewer P1-G: a compromised or misbehaving upstream that streams a
+  // verify response larger than the SDK's byte cap MUST NOT be able to
+  // OOM the consumer. The oversized body is surfaced as InfraFailure
+  // rather than absorbed. 2 MiB response > 1 MiB cap.
+  it('oversized response body → infra-failure (OOM guard)', async () => {
+    const oversized = 'A'.repeat(2 * 1024 * 1024) // 2 MiB
+    handle = await startMockServer(async () => ({
+      status: 200,
+      body: oversized,
+    }))
+    const v = newSessionVerifier({ baseUrl: handle.baseUrl })
+    await expect(v.verify('t')).rejects.toMatchObject({
+      kind: 'infra-failure',
+    })
+  })
+
   it('malformed JSON body → infra-failure (decode error)', async () => {
     handle = await startMockServer(async () => ({ status: 200, body: 'not-json' }))
     const v = newSessionVerifier({ baseUrl: handle.baseUrl })

@@ -185,3 +185,83 @@ describe('maskToken', () => {
     expect(masked).not.toContain(raw.slice(0, 4))
   })
 })
+
+// Reviewer P1-E: X-Internal-Token MUST NOT be replayed to a Location on
+// 3xx. WHATWG fetch strips Authorization on cross-origin redirects but
+// NOT arbitrary custom headers, so we rely on `redirect: 'error'` to
+// halt at the redirect and throw. The attacker mock server counts the
+// number of times it received a request (must stay at 0).
+describe('NotifyClient — redirect defense (P1-E)', () => {
+  it('307 redirect → error, attacker receives 0 requests', async () => {
+    process.env['TEST_NOTIFY_R1'] = 'shared-secret-value'
+    let attackerHits = 0
+    const attacker = await startMockServer(async () => {
+      attackerHits++
+      return { status: 200, body: '{}' }
+    })
+    try {
+      handle = await startMockServer(async () => ({
+        status: 307,
+        headers: { Location: `${attacker.baseUrl}/steal` },
+      }))
+      const c = newNotifyClient({
+        baseUrl: handle.baseUrl,
+        tokenEnvVar: 'TEST_NOTIFY_R1',
+      })
+      await expect(c.send({ channelId: 'c', message: 'm' })).rejects.toThrow(
+        /notify request failed/,
+      )
+      expect(attackerHits).toBe(0)
+    } finally {
+      await attacker.close()
+    }
+  })
+
+  it('308 redirect → error, attacker receives 0 requests', async () => {
+    process.env['TEST_NOTIFY_R2'] = 'another-shared-secret'
+    let attackerHits = 0
+    const attacker = await startMockServer(async () => {
+      attackerHits++
+      return { status: 200, body: '{}' }
+    })
+    try {
+      handle = await startMockServer(async () => ({
+        status: 308,
+        headers: { Location: `${attacker.baseUrl}/steal` },
+      }))
+      const c = newNotifyClient({
+        baseUrl: handle.baseUrl,
+        tokenEnvVar: 'TEST_NOTIFY_R2',
+      })
+      await expect(c.send({ channelId: 'c', message: 'm' })).rejects.toThrow(
+        /notify request failed/,
+      )
+      expect(attackerHits).toBe(0)
+    } finally {
+      await attacker.close()
+    }
+  })
+})
+
+// Reviewer P1-G: notify responses are effectively empty (status-only
+// contract); a compromised upstream that streams a huge body MUST NOT
+// OOM the SDK consumer. Send returns success (2xx) but the drain is
+// capped by MAX_NOTIFY_BODY_BYTES.
+describe('NotifyClient — body drain bounded (P1-G)', () => {
+  it('oversized 200 body does not OOM; send returns success', async () => {
+    process.env['TEST_NOTIFY_BIG'] = 'tok'
+    // 1 MiB body — 16x the 64 KiB drain cap.
+    const oversized = 'A'.repeat(1 << 20)
+    handle = await startMockServer(async () => ({
+      status: 200,
+      body: oversized,
+    }))
+    const c = newNotifyClient({
+      baseUrl: handle.baseUrl,
+      tokenEnvVar: 'TEST_NOTIFY_BIG',
+    })
+    await expect(
+      c.send({ channelId: 'c', message: 'm' }),
+    ).resolves.toBeUndefined()
+  })
+})

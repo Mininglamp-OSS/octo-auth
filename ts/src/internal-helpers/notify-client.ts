@@ -14,6 +14,35 @@ import { consoleLogger } from '../config.js'
 export const DEFAULT_NOTIFY_TIMEOUT_MS = 10_000
 const DEFAULT_NOTIFY_PATH = '/v1/internal/notify'
 
+/**
+ * MAX_NOTIFY_BODY_BYTES bounds how many bytes of the notify response are
+ * drained. Notify responses are effectively empty (status-only contract)
+ * — 64 KiB is orders of magnitude over any legitimate reply. The cap
+ * prevents a malicious/compromised upstream from OOM-ing the SDK
+ * consumer via an unbounded body stream. Reviewer P1-G.
+ */
+const MAX_NOTIFY_BODY_BYTES = 64 << 10 // 64 KiB
+
+/** Drain up to maxBytes of resp.body without buffering the full payload. */
+async function drainBounded(resp: Response, maxBytes: number): Promise<void> {
+  if (!resp.body) return
+  const reader = resp.body.getReader()
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        try { await reader.cancel() } catch { /* ignore */ }
+        return
+      }
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* ignore */ }
+  }
+}
+
 /** NotifyConfig configures a NotifyClient. */
 export interface NotifyConfig {
   /** Required. Target service base URL, e.g. https://octo-server:8090. */
@@ -123,6 +152,13 @@ export class NotifyClient {
     try {
       resp = await this.fetchImpl(this.baseUrl + this.path, {
         method: 'POST',
+        // Fail-closed on 3xx: the notify POST carries X-Internal-Token, a
+        // long-lived shared secret. WHATWG fetch's default 'follow' would
+        // let a redirecting proxy or compromised upstream steal the token
+        // via a 307/308 Location pointing at attacker infra — the Fetch
+        // spec strips Authorization on cross-origin redirects but NOT
+        // arbitrary custom headers. Reviewer P1-E.
+        redirect: 'error',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
@@ -142,9 +178,10 @@ export class NotifyClient {
     } finally {
       clearTimeout(timer)
     }
-    // Drain the body so the connection can be reused.
+    // Drain the body so the connection can be reused, bounded so a
+    // misbehaving upstream cannot OOM the SDK consumer. Reviewer P1-G.
     try {
-      await resp.text()
+      await drainBounded(resp, MAX_NOTIFY_BODY_BYTES)
     } catch {
       // Ignore drain errors.
     }
