@@ -11,7 +11,6 @@ import (
 )
 
 const resolveEndpoint = "/v1/auth/resolve"
-const resolveServiceHeader = "X-Octo-Service-Token"
 
 // BotResolveMode selects Bot-self identity or owner delegation.
 type BotResolveMode string
@@ -60,12 +59,12 @@ type Resolver interface {
 
 type botResolver struct{ cfg *Config }
 
-// NewResolver constructs the new Bot resolver. A separate per-service token is
-// mandatory; a Bot Token cannot authenticate the calling service.
+// NewResolver constructs the Bot resolver using the same Bot credential as
+// the legacy verifier. The caller must derive Action from a controlled route.
 func NewResolver(cfg *Config) Resolver {
 	applyDefaults(cfg)
-	if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.ServiceToken) == "" {
-		panic("octoauth: Resolver requires BaseURL and ServiceToken")
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		panic("octoauth: Resolver requires BaseURL")
 	}
 	return &botResolver{cfg: cfg}
 }
@@ -112,7 +111,6 @@ func (r *botResolver) Resolve(ctx context.Context, credential string, request Re
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set(resolveServiceHeader, r.cfg.ServiceToken)
 	httpReq.Header.Set("Cache-Control", "no-store")
 	resp, err := r.cfg.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -160,8 +158,6 @@ func resolveWireError(status int, body []byte) error {
 		kind, valid = ErrKindInvalidRequest, status == http.StatusBadRequest
 	case "invalid_credential":
 		kind, valid = ErrKindInvalidCredential, status == http.StatusUnauthorized
-	case "untrusted_service":
-		kind, valid = ErrKindInfraFailure, status == http.StatusUnauthorized
 	case "disabled":
 		kind, valid = ErrKindDisabled, status == http.StatusForbidden
 	case "space_not_allowed", "delegation_denied", "action_not_allowed":

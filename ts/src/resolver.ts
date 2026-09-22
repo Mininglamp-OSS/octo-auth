@@ -81,8 +81,6 @@ function wireError(status: number, text: string): OctoAuthError {
       kind = 'invalid-request'; valid = status === 400; break
     case 'invalid_credential':
       kind = 'invalid-credential'; valid = status === 401; break
-    case 'untrusted_service':
-      kind = 'infra-failure'; valid = status === 401; break
     case 'disabled':
       kind = 'disabled'; valid = status === 403; break
     case 'space_not_allowed':
@@ -109,8 +107,6 @@ function readIdentity(value: WireIdentity | undefined, spaceId: string): Resolve
 
 export function newBotResolver(cfg: Config): BotResolver {
   const resolved = applyDefaults(cfg)
-  const serviceToken = cfg.serviceToken?.trim()
-  if (!serviceToken) throw new Error('octoauth: Resolver requires serviceToken')
 
   return {
     async resolve(credential, request, signal) {
@@ -136,7 +132,7 @@ export function newBotResolver(cfg: Config): BotResolver {
           method: 'POST', redirect: 'error', signal: combined,
           headers: {
             'Content-Type': 'application/json', Accept: 'application/json',
-            'Cache-Control': 'no-store', 'X-Octo-Service-Token': serviceToken,
+            'Cache-Control': 'no-store',
           },
           body: JSON.stringify({
             bot_token: credential, mode: request.mode, space_id: request.spaceId,

@@ -48,17 +48,16 @@ const principal = await verifier.verify('bf_...')
 
 ### Bot identity and owner delegation (new Resolve API)
 
-Call Resolve from a trusted backend only. Keep `serviceToken` out of Bot and
-CLI processes. Derive `action` from a controlled service route, and check the
-returned Subject's current business permissions before reading a resource.
+Resolve uses the same Bot token as the existing verifier, without an extra
+service token. A backend must derive `action` from a controlled route, not
+accept it from the Bot. The server checks registration, but cannot identify
+which backend submitted the Action. Check the returned Subject's current
+business permissions before reading a resource.
 
 ```ts
 import { newBotResolver } from '@mininglamp-oss/octo-auth'
 
-const resolver = newBotResolver({
-  baseUrl: process.env.OCTO_SERVER_URL!,
-  serviceToken: process.env.OCTO_OBO_SERVICE_TOKEN!,
-})
+const resolver = newBotResolver({ baseUrl: process.env.OCTO_SERVER_URL! })
 const principal = await resolver.resolve('bf_...', {
   mode: 'OBO', spaceId: 'space-1', action: 'project.read',
 })

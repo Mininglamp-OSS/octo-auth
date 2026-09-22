@@ -19,8 +19,7 @@ func (f resolveRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { r
 
 func resolverTestConfig(handler http.HandlerFunc) *Config {
 	return &Config{
-		BaseURL:      "http://resolve.test",
-		ServiceToken: "service-secret",
+		BaseURL: "http://resolve.test",
 		HTTPClient: &http.Client{Transport: resolveRoundTrip(func(r *http.Request) (*http.Response, error) {
 			w := httptest.NewRecorder()
 			handler(w, r)
@@ -40,14 +39,15 @@ func resolveFixture(t *testing.T, name string) []byte {
 	return fixture
 }
 
-func TestResolverRequiresServiceToken(t *testing.T) {
-	assert.Panics(t, func() { NewResolver(&Config{BaseURL: "http://example.com"}) })
+func TestResolverRequiresBaseURL(t *testing.T) {
+	assert.Panics(t, func() { NewResolver(&Config{}) })
+	assert.NotPanics(t, func() { NewResolver(&Config{BaseURL: "http://example.com"}) })
 }
 
 func TestResolverOBORequestAndPrincipal(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/auth/resolve", r.URL.Path)
-		assert.Equal(t, "service-secret", r.Header.Get("X-Octo-Service-Token"))
+		assert.Empty(t, r.Header.Get("X-Octo-Service-Token"))
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, "bf_secret", body["bot_token"])
@@ -102,7 +102,7 @@ func TestResolverAsBotHasNoDelegation(t *testing.T) {
 	assert.Nil(t, p.Delegation)
 }
 
-func TestResolverUntrustedServiceIsNotBotCredentialError(t *testing.T) {
+func TestResolverRejectsRemovedServiceErrorCode(t *testing.T) {
 	r := NewResolver(resolverTestConfig(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"code":"untrusted_service","request_id":"R"}`))

@@ -61,16 +61,14 @@ p, err := v.Verify(ctx, "bf_...")
 
 ### Bot identity and owner delegation (new Resolve API)
 
-Use the new Resolver only in a trusted backend. Its `ServiceToken` authenticates
-the calling service; never send it to a Bot or CLI. The service derives the
-`Action` from its own controlled route, rather than accepting an arbitrary
-Action from the Bot. Both modes require the request's target Space.
+The Resolver uses the same Bot token as the existing Bot-token verifier; it
+does not require a separate service token. A backend must derive `Action` from
+its own controlled route, never accept an arbitrary Action from the Bot. The
+server checks that the Action is registered, but cannot identify which backend
+submitted it. Both modes require the request's target Space.
 
 ```go
-cfg := &octoauth.Config{
-    BaseURL:      os.Getenv("OCTO_SERVER_URL"),
-    ServiceToken: os.Getenv("OCTO_OBO_SERVICE_TOKEN"),
-}
+cfg := &octoauth.Config{BaseURL: os.Getenv("OCTO_SERVER_URL")}
 resolver := octoauth.NewResolver(cfg)
 principal, err := resolver.Resolve(ctx, "bf_...", octoauth.ResolveRequest{
     Mode: octoauth.ModeOBO, SpaceID: "space-1", Action: "project.read",
@@ -154,7 +152,7 @@ constructor `applyDefaults` step fills it in.
 
 | Symbol | Purpose |
 |---|---|
-| `octoauth.Config` | Shared configuration (`BaseURL`, `HTTPClient`, `Cache`, `Metrics`, `Logger`, TTLs, `RequestIncludeContext`, `HashCacheKey`, `ServiceToken`). `ServiceToken` is required only by `NewResolver`. |
+| `octoauth.Config` | Shared configuration (`BaseURL`, `HTTPClient`, `Cache`, `Metrics`, `Logger`, TTLs, `RequestIncludeContext`, `HashCacheKey`). |
 | `octoauth.NewResolver` / `ResolveRequest` / `ResolvedPrincipal` | Two-mode Bot identity resolution (`AS_BOT` or `OBO`); OBO returns Actor, Subject and Delegation, not business authorization. |
 | `octoauth.NewSessionVerifier` / `NewBotTokenVerifier` / `NewUserKeyVerifier` | Per-realm constructors returning a `Verifier`. |
 | `octoauth.NewMultiVerifier` / `NewFullMultiVerifier` | Prefix-dispatch facade over child verifiers. |

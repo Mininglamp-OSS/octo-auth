@@ -6,7 +6,7 @@ info:
     name: octo-auth maintainers
     url: https://github.com/Mininglamp-OSS/octo-auth
   description: >-
-    New service-to-service Bot identity endpoint. Existing v1 Verify endpoints
+    New Bot identity endpoint. Existing v1 Verify endpoints
     and their response semantics are unchanged. Resolve decides identity and
     delegation, not business-resource permission.
 servers:
@@ -14,17 +14,16 @@ servers:
     description: Placeholder; configure your deployment's octo-server URL.
 tags:
   - name: resolve
-    description: Service-to-service Bot identity resolution.
+    description: Bot identity resolution.
 paths:
   /v1/auth/resolve:
     post:
       operationId: resolveBotIdentity
       tags: [resolve]
-      security:
-        - serviceToken: []
       description: >-
-        The authenticated service derives action from a controlled route.
-        Bot and CLI clients must never send the service token or action directly.
+        Uses the existing Bot token. Backends derive action from a controlled
+        route; the server checks Action registration but cannot authenticate
+        the calling service. Bot and CLI clients must not choose action.
       requestBody:
         required: true
         content:
@@ -46,11 +45,6 @@ paths:
         '403': { $ref: '#/components/responses/ResolveError' }
         '503': { $ref: '#/components/responses/ResolveError' }
 components:
-  securitySchemes:
-    serviceToken:
-      type: apiKey
-      in: header
-      name: X-Octo-Service-Token
   responses:
     ResolveError:
       description: Failed closed; HTTP status and code must be interpreted together.
@@ -113,7 +107,6 @@ components:
             - invalid_obo_request
             - missing_space_id
             - invalid_credential
-            - untrusted_service
             - disabled
             - space_not_allowed
             - delegation_denied
