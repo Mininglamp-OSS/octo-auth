@@ -2,14 +2,24 @@ openapi: 3.0.3
 info:
   title: Octo Bot identity resolution
   version: 1.0.0
+  contact:
+    name: octo-auth maintainers
+    url: https://github.com/Mininglamp-OSS/octo-auth
   description: >-
     New service-to-service Bot identity endpoint. Existing v1 Verify endpoints
     and their response semantics are unchanged. Resolve decides identity and
     delegation, not business-resource permission.
+servers:
+  - url: https://octo-server.example.com
+    description: Placeholder; configure your deployment's octo-server URL.
+tags:
+  - name: resolve
+    description: Service-to-service Bot identity resolution.
 paths:
   /v1/auth/resolve:
     post:
       operationId: resolveBotIdentity
+      tags: [resolve]
       security:
         - serviceToken: []
       description: >-

@@ -36,6 +36,9 @@ jobs:
       - name: Lint errors-v1.yaml
         run: spectral lint contract/errors-v1.yaml --fail-severity=warn
 
+      - name: Lint auth-resolve.yaml
+        run: spectral lint contract/auth-resolve.yaml --fail-severity=warn
+
   contract-breaking-check:
     name: Breaking-change check (oasdiff)
     runs-on: ubuntu-latest
@@ -49,6 +52,7 @@ jobs:
         run: |
           mkdir -p /tmp/base
           if git show "${{ github.event.pull_request.base.sha }}:contract/auth-v1.yaml" > /tmp/base/auth-v1.yaml 2>/dev/null; then
+            git show "${{ github.event.pull_request.base.sha }}:contract/errors-v1.yaml" > /tmp/base/errors-v1.yaml
             echo "have_base=true" >> "$GITHUB_ENV"
           else
             echo "have_base=false" >> "$GITHUB_ENV"
