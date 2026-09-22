@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// ErrorKind classifies an SDK error into one of five stable buckets that
+// ErrorKind classifies an SDK error into stable buckets that
 // callers and middleware can switch on without inspecting string messages.
 // See design doc §5.1.
 type ErrorKind int
@@ -30,6 +30,8 @@ const (
 	// ErrKindForbidden means the credential authenticated but the caller is
 	// not authorized for the requested realm or space. HTTP 403.
 	ErrKindForbidden
+	// ErrKindInvalidRequest means the resolver request is malformed.
+	ErrKindInvalidRequest
 )
 
 // String returns a stable, snake_case label for the kind. It is suitable as
@@ -46,6 +48,8 @@ func (k ErrorKind) String() string {
 		return "pre_v2_server"
 	case ErrKindForbidden:
 		return "forbidden"
+	case ErrKindInvalidRequest:
+		return "invalid_request"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(k))
 	}
@@ -58,7 +62,7 @@ func (k ErrorKind) String() string {
 type Error struct {
 	// Kind is the coarse-grained bucket. Compare via errors.Is with the
 	// package sentinels (ErrInvalidCredential, ErrDisabled, ErrInfraFailure,
-	// ErrForbidden).
+	// ErrForbidden, ErrInvalidRequest).
 	Kind ErrorKind
 	// Message is a diagnostic string for logs. It is NOT safe to echo to API
 	// callers verbatim — the default middleware error mapper substitutes
@@ -68,6 +72,9 @@ type Error struct {
 	Cause error
 	// Verifier records which realm produced the error, when known.
 	Verifier PrincipalKind
+	// Code and RequestID are populated by the new Resolve protocol only.
+	Code      string
+	RequestID string
 }
 
 // Sentinel errors for use with [errors.Is]. Each sentinel carries only a
@@ -81,6 +88,7 @@ var (
 	ErrDisabled          = &Error{Kind: ErrKindDisabled}
 	ErrInfraFailure      = &Error{Kind: ErrKindInfraFailure}
 	ErrForbidden         = &Error{Kind: ErrKindForbidden}
+	ErrInvalidRequest    = &Error{Kind: ErrKindInvalidRequest}
 )
 
 // Error implements the error interface. The format includes the kind, an

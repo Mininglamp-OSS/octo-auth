@@ -59,6 +59,34 @@ v := octoauth.NewBotTokenVerifier(cfg)
 p, err := v.Verify(ctx, "bf_...")
 ```
 
+### Bot identity and owner delegation (new Resolve API)
+
+Use the new Resolver only in a trusted backend. Its `ServiceToken` authenticates
+the calling service; never send it to a Bot or CLI. The service derives the
+`Action` from its own controlled route, rather than accepting an arbitrary
+Action from the Bot. Both modes require the request's target Space.
+
+```go
+cfg := &octoauth.Config{
+    BaseURL:      os.Getenv("OCTO_SERVER_URL"),
+    ServiceToken: os.Getenv("OCTO_OBO_SERVICE_TOKEN"),
+}
+resolver := octoauth.NewResolver(cfg)
+principal, err := resolver.Resolve(ctx, "bf_...", octoauth.ResolveRequest{
+    Mode: octoauth.ModeOBO, SpaceID: "space-1", Action: "project.read",
+})
+if err != nil { /* deny the request; do not fall back to AS_BOT */ }
+// principal.Actor is the Bot; principal.Subject is its current Human owner.
+// The business service still checks Subject's current resource permissions.
+```
+
+For a Bot-self request, use `ModeAsBot` and omit `Action`. Existing `Verify`
+methods and their response semantics are unchanged. See
+[`../contract/auth-resolve.yaml`](../contract/auth-resolve.yaml).
+For `net/http` routes, `nethttp.WrapBotResolve` fixes the mode/Action at route
+registration, checks the `obo=true` marker on OBO routes, and attaches the
+result for `nethttp.BotResolvedPrincipal(r.Context())`.
+
 ### User-API-key verifier
 
 ```go
@@ -126,7 +154,8 @@ constructor `applyDefaults` step fills it in.
 
 | Symbol | Purpose |
 |---|---|
-| `octoauth.Config` | Shared configuration (`BaseURL`, `HTTPClient`, `Cache`, `Metrics`, `Logger`, TTLs, `RequestIncludeContext`, `HashCacheKey`). Only `BaseURL` is required. |
+| `octoauth.Config` | Shared configuration (`BaseURL`, `HTTPClient`, `Cache`, `Metrics`, `Logger`, TTLs, `RequestIncludeContext`, `HashCacheKey`, `ServiceToken`). `ServiceToken` is required only by `NewResolver`. |
+| `octoauth.NewResolver` / `ResolveRequest` / `ResolvedPrincipal` | Two-mode Bot identity resolution (`AS_BOT` or `OBO`); OBO returns Actor, Subject and Delegation, not business authorization. |
 | `octoauth.NewSessionVerifier` / `NewBotTokenVerifier` / `NewUserKeyVerifier` | Per-realm constructors returning a `Verifier`. |
 | `octoauth.NewMultiVerifier` / `NewFullMultiVerifier` | Prefix-dispatch facade over child verifiers. |
 | `octoauth.Verifier` | `Kind() PrincipalKind`; `Verify(ctx, credential) (*Principal, error)`. |

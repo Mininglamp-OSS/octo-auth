@@ -41,6 +41,10 @@ type Config struct {
 	// Required; zero value is invalid.
 	BaseURL string
 
+	// ServiceToken authenticates this SDK consumer to /v1/auth/resolve.
+	// Legacy verifiers do not use this field.
+	ServiceToken string
+
 	// HTTPClient is the transport used by every verifier. If nil, a
 	// fresh &http.Client{Timeout: DefaultHTTPTimeout} is installed.
 	//
@@ -202,6 +206,8 @@ func DefaultErrorMapper(err error) (int, []byte) {
 		return http.StatusServiceUnavailable, bodyUpstreamUnavailable
 	case ErrKindForbidden:
 		return http.StatusForbidden, bodyForbidden
+	case ErrKindInvalidRequest:
+		return http.StatusBadRequest, []byte(`{"error":"invalid_request"}`)
 	default:
 		return http.StatusInternalServerError, bodyInternal
 	}

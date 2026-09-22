@@ -9,12 +9,14 @@
  */
 
 import type { Principal, Credential } from './verifier.js'
+import type { ResolvedPrincipal } from './resolver.js'
 
 declare global {
   namespace Express {
     interface Request {
       principal?: Principal
       credential?: Credential
+      resolvedPrincipal?: ResolvedPrincipal
     }
   }
 }

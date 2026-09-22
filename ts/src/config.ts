@@ -56,6 +56,8 @@ export const DEFAULT_NEGATIVE_TTL_MS = 5_000
 export interface Config {
   /** Required. octo-server base URL, e.g. https://octo-server:8090. */
   baseUrl: string
+  /** Per-service credential for the new Bot Resolve endpoint. */
+  serviceToken?: string
   /** Fetch implementation. Defaults to globalThis.fetch (Node 20+). */
   fetch?: typeof globalThis.fetch
   /** Cache backend. Defaults to newLRUCache(10_000). */

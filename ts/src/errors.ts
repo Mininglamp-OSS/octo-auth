@@ -9,18 +9,21 @@
 
 import type { PrincipalKind } from './verifier.js'
 
-/** ErrorKind classifies an SDK error into one of five stable buckets. */
+/** ErrorKind classifies an SDK error into stable buckets. */
 export type ErrorKind =
   | 'invalid-credential'
   | 'disabled'
   | 'infra-failure'
   | 'pre-v2-server'
   | 'forbidden'
+  | 'invalid-request'
 
 /** Options passed to the OctoAuthError constructor. */
 export interface OctoAuthErrorOptions {
   cause?: unknown
   verifier?: PrincipalKind
+  code?: string
+  requestId?: string
 }
 
 /**
@@ -38,6 +41,8 @@ export class OctoAuthError extends Error {
   readonly kind: ErrorKind
   /** Which realm produced the error, when known. */
   readonly verifier?: PrincipalKind
+  readonly code?: string
+  readonly requestId?: string
 
   constructor(
     kind: ErrorKind,
@@ -51,6 +56,8 @@ export class OctoAuthError extends Error {
     if (opts?.verifier !== undefined) {
       this.verifier = opts.verifier
     }
+    if (opts?.code !== undefined) this.code = opts.code
+    if (opts?.requestId !== undefined) this.requestId = opts.requestId
     // Ensure prototype chain works across ES targets.
     Object.setPrototypeOf(this, new.target.prototype)
   }
@@ -98,6 +105,7 @@ export const BODY_UNAUTHORIZED = '{"error":"unauthorized"}'
 export const BODY_DISABLED = '{"error":"disabled"}'
 export const BODY_UPSTREAM_UNAVAILABLE = '{"error":"upstream_unavailable"}'
 export const BODY_FORBIDDEN = '{"error":"forbidden"}'
+export const BODY_INVALID_REQUEST = '{"error":"invalid_request"}'
 export const BODY_INTERNAL = '{"error":"internal"}'
 
 /**
@@ -119,6 +127,7 @@ export type ErrorMapperFn = (err: unknown) => ErrorMapperResult
  *   disabled           → 403 {"error":"disabled"}
  *   infra-failure      → 503 {"error":"upstream_unavailable"}
  *   forbidden          → 403 {"error":"forbidden"}
+ *   invalid-request    → 400 {"error":"invalid_request"}
  *   otherwise          → 500 {"error":"internal"}
  *
  * Non-OctoAuthError values and pre-v2-server signals fall through to 500.
@@ -136,6 +145,8 @@ export const defaultErrorMapper: ErrorMapperFn = (err: unknown) => {
       return { status: 503, body: BODY_UPSTREAM_UNAVAILABLE }
     case 'forbidden':
       return { status: 403, body: BODY_FORBIDDEN }
+    case 'invalid-request':
+      return { status: 400, body: BODY_INVALID_REQUEST }
     default:
       return { status: 500, body: BODY_INTERNAL }
   }

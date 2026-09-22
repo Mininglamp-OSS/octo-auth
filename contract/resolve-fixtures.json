@@ -1,0 +1,19 @@
+{
+  "as_bot": {
+    "mode": "AS_BOT",
+    "actor": {"uid": "bot-1", "kind": "BOT", "space_id": "space-1"},
+    "subject": {"uid": "bot-1", "kind": "BOT", "space_id": "space-1"}
+  },
+  "obo": {
+    "mode": "OBO",
+    "actor": {"uid": "bot-1", "kind": "BOT", "space_id": "space-1"},
+    "subject": {"uid": "owner-1", "kind": "HUMAN", "space_id": "space-1"},
+    "delegation": {
+      "grant_id": 7,
+      "matched_scope": "ALL",
+      "policy_version": 2,
+      "action": "project.read",
+      "decision_id": "D"
+    }
+  }
+}

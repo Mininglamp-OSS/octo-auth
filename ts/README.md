@@ -46,6 +46,31 @@ const verifier = newBotTokenVerifier({ baseUrl: process.env.OCTO_SERVER_URL! })
 const principal = await verifier.verify('bf_...')
 ```
 
+### Bot identity and owner delegation (new Resolve API)
+
+Call Resolve from a trusted backend only. Keep `serviceToken` out of Bot and
+CLI processes. Derive `action` from a controlled service route, and check the
+returned Subject's current business permissions before reading a resource.
+
+```ts
+import { newBotResolver } from '@mininglamp-oss/octo-auth'
+
+const resolver = newBotResolver({
+  baseUrl: process.env.OCTO_SERVER_URL!,
+  serviceToken: process.env.OCTO_OBO_SERVICE_TOKEN!,
+})
+const principal = await resolver.resolve('bf_...', {
+  mode: 'OBO', spaceId: 'space-1', action: 'project.read',
+})
+// principal.actor is the Bot; principal.subject is its current Human owner.
+```
+
+Use `mode: 'AS_BOT'` without `action` for Bot-self requests. A denied OBO
+request must not fall back to AS_BOT. Existing verifiers are unchanged; the
+wire contract is [`../contract/auth-resolve.yaml`](../contract/auth-resolve.yaml).
+For Express routes, `expressBotResolveMiddleware` from the middleware subpath
+fixes mode/Action at registration and attaches `req.resolvedPrincipal`.
+
 ### User-API-key verifier
 
 ```ts

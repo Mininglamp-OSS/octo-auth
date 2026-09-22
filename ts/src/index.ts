@@ -42,6 +42,7 @@ export {
   BODY_DISABLED,
   BODY_UPSTREAM_UNAVAILABLE,
   BODY_FORBIDDEN,
+  BODY_INVALID_REQUEST,
   BODY_INTERNAL,
   type ErrorKind,
   type OctoAuthErrorOptions,
@@ -98,6 +99,15 @@ export { newSessionVerifier } from './session-verifier.js'
 export { newBotTokenVerifier } from './bot-token-verifier.js'
 export { newUserKeyVerifier } from './user-key-verifier.js'
 export { newFullMultiVerifier } from './full-multi-verifier.js'
+export {
+  newBotResolver,
+  type BotResolver,
+  type BotResolveMode,
+  type ResolveRequest,
+  type ResolvedPrincipal,
+  type ResolvedIdentity,
+  type ResolvedDelegation,
+} from './resolver.js'
 
 // Ambient Express.Request augmentation (empty runtime import; side-effect on types only).
 import './types-ext.js'
