@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const resolveEndpoint = "/v1/auth/resolve"
+const resolveEndpoint = "/v1/internal/auth/resolve"
 
 // BotResolveMode selects Bot-self identity or owner delegation.
 type BotResolveMode string

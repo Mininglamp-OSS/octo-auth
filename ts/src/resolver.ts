@@ -5,7 +5,7 @@ import { OctoAuthError } from './errors.js'
 import { readTextBounded } from './http-verifier.js'
 import { KindBot, PrefixApp } from './verifier.js'
 
-const ENDPOINT = '/v1/auth/resolve'
+const ENDPOINT = '/v1/internal/auth/resolve'
 const MAX_BODY_BYTES = 1 << 20
 
 export type BotResolveMode = 'AS_BOT' | 'OBO'

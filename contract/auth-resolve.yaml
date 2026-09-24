@@ -16,7 +16,7 @@ tags:
   - name: resolve
     description: Bot identity resolution.
 paths:
-  /v1/auth/resolve:
+  /v1/internal/auth/resolve:
     post:
       operationId: resolveBotIdentity
       tags: [resolve]

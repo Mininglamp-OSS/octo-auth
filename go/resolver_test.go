@@ -46,7 +46,7 @@ func TestResolverRequiresBaseURL(t *testing.T) {
 
 func TestResolverOBORequestAndPrincipal(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v1/auth/resolve", r.URL.Path)
+		assert.Equal(t, "/v1/internal/auth/resolve", r.URL.Path)
 		assert.Empty(t, r.Header.Get("X-Octo-Service-Token"))
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))

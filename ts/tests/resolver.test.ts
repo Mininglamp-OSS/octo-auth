@@ -25,7 +25,7 @@ describe('Bot Resolver', () => {
     expect(p.actor.uid).toBe('bot-1')
     expect(p.subject.uid).toBe('owner-1')
     expect(p.delegation?.matchedScope).toBe('ALL')
-    expect(calls[0]?.url).toBe('http://resolve.test/v1/auth/resolve')
+    expect(calls[0]?.url).toBe('http://resolve.test/v1/internal/auth/resolve')
     expect(new Headers(calls[0]?.init.headers).has('X-Octo-Service-Token')).toBe(false)
     expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
       bot_token: 'bf_secret', mode: 'OBO', space_id: 'space-1', action: 'project.read',

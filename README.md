@@ -6,7 +6,7 @@ Client SDK to verify [octo-server](https://github.com/Mininglamp-OSS/octo-server
 
 | Path                | Contents                                                                      |
 | ------------------- | ----------------------------------------------------------------------------- |
-| [`contract/`](./contract) | OpenAPI 3.1 wire contracts for the three `/v1/auth/verify*` endpoints and the Bot `/v1/auth/resolve` endpoint. |
+| [`contract/`](./contract) | OpenAPI 3.1 wire contracts for the three `/v1/auth/verify*` endpoints and the Bot `/v1/internal/auth/resolve` endpoint. |
 | [`go/`](./go)             | Go SDK. Requires Go 1.25+. Middleware for `net/http`, `gin`, `echo`, and `wkhttp`. |
 | [`ts/`](./ts)             | TypeScript SDK (pure ESM). Requires Node 20+. Middleware for `express` and `@hocuspocus/server`. |
 
