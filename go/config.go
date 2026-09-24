@@ -174,6 +174,7 @@ var (
 	bodyDisabled            = []byte(`{"error":"disabled"}`)
 	bodyUpstreamUnavailable = []byte(`{"error":"upstream_unavailable"}`)
 	bodyForbidden           = []byte(`{"error":"forbidden"}`)
+	bodyInvalidRequest      = []byte(`{"error":"invalid_request"}`)
 	bodyInternal            = []byte(`{"error":"internal"}`)
 )
 
@@ -183,6 +184,7 @@ var (
 //	ErrKindDisabled          → 403 {"error":"disabled"}
 //	ErrKindInfraFailure      → 503 {"error":"upstream_unavailable"}
 //	ErrKindForbidden         → 403 {"error":"forbidden"}
+//	ErrKindInvalidRequest    → 400 {"error":"invalid_request"}
 //	otherwise                → 500 {"error":"internal"}
 //
 // Non-SDK errors and ErrKindPreV2Server both fall through to the 500 branch
@@ -203,7 +205,7 @@ func DefaultErrorMapper(err error) (int, []byte) {
 	case ErrKindForbidden:
 		return http.StatusForbidden, bodyForbidden
 	case ErrKindInvalidRequest:
-		return http.StatusBadRequest, []byte(`{"error":"invalid_request"}`)
+		return http.StatusBadRequest, bodyInvalidRequest
 	default:
 		return http.StatusInternalServerError, bodyInternal
 	}

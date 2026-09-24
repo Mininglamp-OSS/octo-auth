@@ -2,11 +2,18 @@
 import type { Config } from './config.js'
 import { applyDefaults } from './config.js'
 import { OctoAuthError } from './errors.js'
-import { readTextBounded } from './http-verifier.js'
-import { KindBot, PrefixApp } from './verifier.js'
+import {
+  logVerifyResult,
+  readTextBounded,
+  VERIFY_RESULT_AUTH_ERR,
+  VERIFY_RESULT_INFRA,
+  VERIFY_RESULT_MISS_OK,
+} from './http-verifier.js'
+import { KindBot, PrefixBF } from './verifier.js'
 
 const ENDPOINT = '/v1/internal/auth/resolve'
 const MAX_BODY_BYTES = 1 << 20
+const DECISION_ID_PATTERN = /^[0-9a-f]{32}$/
 
 export type BotResolveMode = 'AS_BOT' | 'OBO'
 
@@ -70,13 +77,15 @@ function wireError(status: number, text: string): OctoAuthError {
   try { envelope = JSON.parse(text) as typeof envelope } catch (err) {
     return protocolError('invalid Resolve error envelope', err)
   }
+  if (typeof envelope?.request_id !== 'string' || envelope.request_id.length === 0) {
+    return protocolError('Resolve error response missing request_id')
+  }
   const code = envelope?.code
   let kind: 'invalid-request' | 'invalid-credential' | 'disabled' | 'forbidden' | 'infra-failure' = 'infra-failure'
   let valid = false
   switch (code) {
     case 'invalid_mode':
     case 'invalid_request':
-    case 'invalid_obo_request':
     case 'missing_space_id':
       kind = 'invalid-request'; valid = status === 400; break
     case 'invalid_credential':
@@ -110,12 +119,15 @@ export function newBotResolver(cfg: Config): BotResolver {
 
   return {
     async resolve(credential, request, signal) {
-      if (!credential || credential.startsWith(PrefixApp)) {
+      const started = Date.now()
+      let result = VERIFY_RESULT_MISS_OK
+      try {
+      if (!credential.startsWith(PrefixBF) || credential.length <= PrefixBF.length || credential.trim() !== credential) {
         throw new OctoAuthError('invalid-credential', 'unsupported or empty Bot credential', { verifier: KindBot })
       }
       if (!request.spaceId?.trim()) throw requestError('spaceId is required')
       if (request.mode === 'AS_BOT') {
-        if (request.action !== undefined || request.resource !== undefined) {
+        if ((request.action !== undefined && request.action !== '') || request.resource !== undefined) {
           throw requestError('AS_BOT cannot carry action or resource')
         }
       } else if (request.mode === 'OBO') {
@@ -136,7 +148,7 @@ export function newBotResolver(cfg: Config): BotResolver {
           },
           body: JSON.stringify({
             bot_token: credential, mode: request.mode, space_id: request.spaceId,
-            ...(request.action === undefined ? {} : { action: request.action }),
+            ...(request.action ? { action: request.action } : {}),
             ...(request.resource === undefined ? {} : { resource: request.resource }),
           }),
         })
@@ -147,7 +159,10 @@ export function newBotResolver(cfg: Config): BotResolver {
       try { text = await readTextBounded(response, MAX_BODY_BYTES) } catch (err) {
         throw protocolError('read bounded Resolve response', err)
       }
-      if (response.status !== 200) throw wireError(response.status, text)
+      if (response.status !== 200) {
+        logVerifyResult(resolved, KindBot, ENDPOINT, response.status, text)
+        throw wireError(response.status, text)
+      }
       let wire: WirePrincipal
       try { wire = JSON.parse(text) as WirePrincipal } catch (err) {
         throw protocolError('decode Resolve response', err)
@@ -166,7 +181,9 @@ export function newBotResolver(cfg: Config): BotResolver {
       const delegation = wire.delegation
       if (subject.kind !== 'HUMAN' || !delegation || !Number.isSafeInteger(delegation.grant_id) ||
           delegation.grant_id! <= 0 || delegation.matched_scope !== 'ALL' ||
-          delegation.action !== request.action || !Number.isSafeInteger(delegation.policy_version)) {
+          delegation.action !== request.action || !Number.isSafeInteger(delegation.policy_version) ||
+          delegation.policy_version! <= 0 || typeof delegation.decision_id !== 'string' ||
+          !DECISION_ID_PATTERN.test(delegation.decision_id)) {
         throw protocolError('OBO response mismatch')
       }
       return {
@@ -174,8 +191,18 @@ export function newBotResolver(cfg: Config): BotResolver {
         delegation: {
           grantId: delegation.grant_id!, matchedScope: 'ALL',
           policyVersion: delegation.policy_version!, action: delegation.action!,
-          decisionId: delegation.decision_id ?? '',
+          decisionId: delegation.decision_id,
         },
+      }
+      } catch (err) {
+        result = VERIFY_RESULT_INFRA
+        if (err instanceof OctoAuthError) {
+          resolved.metrics.incErrorByKind(KindBot, err.kind)
+          if (err.kind !== 'infra-failure') result = VERIFY_RESULT_AUTH_ERR
+        }
+        throw err
+      } finally {
+        resolved.metrics.observeVerifyDuration(KindBot, result, Date.now() - started)
       }
     },
   }

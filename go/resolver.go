@@ -3,11 +3,14 @@ package octoauth
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const resolveEndpoint = "/v1/internal/auth/resolve"
@@ -77,8 +80,23 @@ func resolveProtocolFailure(message string, cause error) error {
 	return &Error{Kind: ErrKindInfraFailure, Message: message, Cause: cause, Verifier: KindBot}
 }
 
-func (r *botResolver) Resolve(ctx context.Context, credential string, request ResolveRequest) (*ResolvedPrincipal, error) {
-	if credential == "" || strings.HasPrefix(credential, PrefixApp) {
+func (r *botResolver) Resolve(ctx context.Context, credential string, request ResolveRequest) (principal *ResolvedPrincipal, err error) {
+	started := time.Now()
+	defer func() {
+		result := verifyResultMissOK
+		if err != nil {
+			result = verifyResultInfra
+			var authErr *Error
+			if errors.As(err, &authErr) {
+				r.cfg.Metrics.IncErrorByKind(KindBot, authErr.Kind)
+				if authErr.Kind != ErrKindInfraFailure {
+					result = verifyResultAuthErr
+				}
+			}
+		}
+		r.cfg.Metrics.ObserveVerifyDuration(KindBot, result, time.Since(started))
+	}()
+	if !strings.HasPrefix(credential, PrefixBF) || len(credential) <= len(PrefixBF) || strings.TrimSpace(credential) != credential {
 		return nil, &Error{Kind: ErrKindInvalidCredential, Message: "unsupported or empty Bot credential", Verifier: KindBot}
 	}
 	if strings.TrimSpace(request.SpaceID) == "" {
@@ -122,6 +140,7 @@ func (r *botResolver) Resolve(ctx context.Context, credential string, request Re
 		return nil, resolveProtocolFailure("read bounded Resolve response", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		logVerifyResult(r.cfg, KindBot, resolveEndpoint, resp.StatusCode, body)
 		return nil, resolveWireError(resp.StatusCode, body)
 	}
 	var out ResolvedPrincipal
@@ -137,6 +156,7 @@ func (r *botResolver) Resolve(ctx context.Context, credential string, request Re
 			return nil, resolveProtocolFailure("AS_BOT response mismatch", nil)
 		}
 	} else if out.Subject.Kind != "HUMAN" || out.Delegation == nil || out.Delegation.GrantID <= 0 ||
+		out.Delegation.PolicyVersion <= 0 || !validResolveDecisionID(out.Delegation.DecisionID) ||
 		out.Delegation.Action != request.Action || out.Delegation.MatchedScope != "ALL" {
 		return nil, resolveProtocolFailure("OBO response mismatch", nil)
 	}
@@ -151,10 +171,13 @@ func resolveWireError(status int, body []byte) error {
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return resolveProtocolFailure("invalid Resolve error envelope", err)
 	}
+	if wire.RequestID == "" {
+		return resolveProtocolFailure("Resolve error response missing request_id", nil)
+	}
 	kind := ErrKindInfraFailure
 	valid := false
 	switch wire.Code {
-	case "invalid_mode", "invalid_request", "invalid_obo_request", "missing_space_id":
+	case "invalid_mode", "invalid_request", "missing_space_id":
 		kind, valid = ErrKindInvalidRequest, status == http.StatusBadRequest
 	case "invalid_credential":
 		kind, valid = ErrKindInvalidCredential, status == http.StatusUnauthorized
@@ -169,4 +192,12 @@ func resolveWireError(status int, body []byte) error {
 		return resolveProtocolFailure(fmt.Sprintf("unexpected Resolve status/code: %d/%s", status, wire.Code), nil)
 	}
 	return &Error{Kind: kind, Code: wire.Code, RequestID: wire.RequestID, Message: "Resolve rejected", Verifier: KindBot}
+}
+
+func validResolveDecisionID(value string) bool {
+	if len(value) != 32 || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }

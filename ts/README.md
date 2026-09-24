@@ -49,10 +49,12 @@ const principal = await verifier.verify('bf_...')
 ### Bot identity and owner delegation (new Resolve API)
 
 Resolve uses the same Bot token as the existing verifier, without an extra
-service token. A backend must derive `action` from a controlled route, not
-accept it from the Bot. The server checks registration, but cannot identify
-which backend submitted the Action. Check the returned Subject's current
-business permissions before reading a resource.
+service token. A backend must derive `action` from a controlled route, never
+accept an arbitrary action or Human subject from the Bot. The
+`/v1/internal/` namespace identifies a backend integration API; it does not add
+a caller credential or enforce network isolation. Configure `baseUrl` for the
+same octo-server deployment used by the existing verifiers. Check the returned
+Subject's current business permissions before reading a resource.
 
 ```ts
 import { newBotResolver } from '@mininglamp-oss/octo-auth'
@@ -68,7 +70,14 @@ Use `mode: 'AS_BOT'` without `action` for Bot-self requests. A denied OBO
 request must not fall back to AS_BOT. Existing verifiers are unchanged; the
 wire contract is [`../contract/auth-resolve.yaml`](../contract/auth-resolve.yaml).
 For Express routes, `expressBotResolveMiddleware` from the middleware subpath
-fixes mode/Action at registration and attaches `req.resolvedPrincipal`.
+fixes mode/Action at registration and attaches `req.resolvedPrincipal`. OBO
+routes require `?obo=true`; AS_BOT routes reject that marker. Both modes reject
+`on_behalf_of`, `human_uid`, and `subject_uid`. Other HTTP frameworks should
+apply the same fixed-route policy before calling the Resolver directly.
+The default `space_id` query extractor is only transport plumbing: before
+business access, bind or compare that Space with the Space that owns the
+requested resource. Prefer a trusted `spaceId` extractor when the route
+already knows the resource's Space.
 
 ### User-API-key verifier
 

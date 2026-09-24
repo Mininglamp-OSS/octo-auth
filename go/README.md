@@ -63,9 +63,11 @@ p, err := v.Verify(ctx, "bf_...")
 
 The Resolver uses the same Bot token as the existing Bot-token verifier; it
 does not require a separate service token. A backend must derive `Action` from
-its own controlled route, never accept an arbitrary Action from the Bot. The
-server checks that the Action is registered, but cannot identify which backend
-submitted it. Both modes require the request's target Space.
+its own controlled route, never accept an arbitrary Action or Human subject
+from the Bot. Both modes require the request's target Space. The
+`/v1/internal/` namespace identifies a backend integration API; it does not add
+a caller credential or enforce network isolation. Configure `BaseURL` for the
+same octo-server deployment used by the existing verifiers.
 
 ```go
 cfg := &octoauth.Config{BaseURL: os.Getenv("OCTO_SERVER_URL")}
@@ -83,7 +85,14 @@ methods and their response semantics are unchanged. See
 [`../contract/auth-resolve.yaml`](../contract/auth-resolve.yaml).
 For `net/http` routes, `nethttp.WrapBotResolve` fixes the mode/Action at route
 registration, checks the `obo=true` marker on OBO routes, and attaches the
-result for `nethttp.BotResolvedPrincipal(r.Context())`.
+result for `nethttp.BotResolvedPrincipal(r.Context())`. AS_BOT routes reject
+the marker, and both modes reject `on_behalf_of`, `human_uid`, and
+`subject_uid`. Other HTTP frameworks should apply the same fixed-route policy
+before calling the Resolver directly.
+The default `space_id` query extractor is only transport plumbing: before
+business access, bind or compare that Space with the Space that owns the
+requested resource. Prefer a trusted `BotResolveOptions.SpaceID` extractor
+when the route already knows the resource's Space.
 
 ### User-API-key verifier
 

@@ -193,7 +193,7 @@ export function statusToError(
   })
 }
 
-function logVerifyResult(
+export function logVerifyResult(
   cfg: ResolvedConfig,
   verifier: PrincipalKind,
   endpoint: string,

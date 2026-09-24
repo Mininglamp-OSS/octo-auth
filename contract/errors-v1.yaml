@@ -14,10 +14,13 @@ info:
 
     ## Wire vs. SDK error kinds
 
-    The SDK exposes five typed error kinds
+    The SDK exposes six typed error kinds
     (`ErrKindInvalidCredential` / `ErrKindDisabled` /
-    `ErrKindInfraFailure` / `ErrKindForbidden` / `ErrKindPreV2Server`).
-    Four of them map onto wire codes; `ErrKindPreV2Server` is internal
+    `ErrKindInfraFailure` / `ErrKindForbidden` / `ErrKindPreV2Server` /
+    `ErrKindInvalidRequest`).
+    `ErrKindInvalidRequest` is used only by the separate Resolve contract and
+    its flat error envelope. Four of the remaining kinds map onto this verify
+    contract's wire codes; `ErrKindPreV2Server` is internal
     and never appears on the wire — the SDK derives it from an absent
     `context_included` field on an otherwise-successful response and
     surfaces it via `ContextUnknownServer` on the returned Principal.
@@ -29,6 +32,7 @@ info:
     | ErrKindForbidden            | `AUTH_FORBIDDEN`            | 403  | Authenticated but not authorised for this space.  |
     | ErrKindInfraFailure         | `AUTH_INFRA_FAILURE`        | 503  | Upstream verify endpoint unavailable.             |
     | ErrKindPreV2Server          | *(not on the wire)*        | —    | Internal signal; see design docs.                 |
+    | ErrKindInvalidRequest       | *(Resolve contract only)*  | 400  | Not emitted by the verify endpoints.              |
 
     ## Anti-enumeration
 

@@ -59,7 +59,10 @@ export function expressBotResolveMiddleware(opts: ExpressBotResolveOptions): Min
     throw new Error('octoauth/middleware/express: Resolver, mode, and fixed OBO Action are required')
   }
   const mapper = opts.errorMapper ?? defaultErrorMapper
-  const spaceId = opts.spaceId ?? ((req: MinimalExpressRequest) => String(req.query?.space_id ?? ''))
+  const spaceId = opts.spaceId ?? ((req: MinimalExpressRequest) => {
+    const value = req.query?.space_id
+    return typeof value === 'string' ? value : ''
+  })
   return async (req, res, next) => {
     try {
       const credential = extractCredential(req)

@@ -35,7 +35,13 @@ func WrapBotResolve(next http.Handler, opts BotResolveOptions) http.Handler {
 	}
 	spaceID := opts.SpaceID
 	if spaceID == nil {
-		spaceID = func(r *http.Request) string { return r.URL.Query().Get("space_id") }
+		spaceID = func(r *http.Request) string {
+			values := r.URL.Query()["space_id"]
+			if len(values) != 1 {
+				return ""
+			}
+			return values[0]
+		}
 	}
 	mapper := opts.ErrorMapper
 	if mapper == nil {
@@ -51,8 +57,9 @@ func WrapBotResolve(next http.Handler, opts BotResolveOptions) http.Handler {
 			write(w, mapper, &octoauth.Error{Kind: octoauth.ErrKindInvalidCredential, Message: "Bot credential required"})
 			return
 		}
-		marker := r.URL.Query().Get("obo")
-		if (opts.Mode == octoauth.ModeOBO && marker != "true") || (opts.Mode == octoauth.ModeAsBot && marker != "") {
+		markers, markerPresent := r.URL.Query()["obo"]
+		if (opts.Mode == octoauth.ModeOBO && (len(markers) != 1 || markers[0] != "true")) ||
+			(opts.Mode == octoauth.ModeAsBot && markerPresent) {
 			write(w, mapper, &octoauth.Error{Kind: octoauth.ErrKindInvalidRequest, Message: "OBO marker does not match route mode"})
 			return
 		}

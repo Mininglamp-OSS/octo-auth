@@ -13,7 +13,11 @@
       "matched_scope": "ALL",
       "policy_version": 2,
       "action": "project.read",
-      "decision_id": "D"
+      "decision_id": "0123456789abcdef0123456789abcdef"
     }
+  },
+  "delegation_denied": {
+    "code": "delegation_denied",
+    "request_id": "request-1"
   }
 }

@@ -23,7 +23,9 @@ See [`contract/auth-v1.yaml`](./contract/auth-v1.yaml) for the wire schema and [
 Bot identity resolution with an explicit Space and optional owner delegation is
 specified in [`contract/auth-resolve.yaml`](./contract/auth-resolve.yaml). Both
 SDKs keep the existing verification API unchanged and expose a separate Bot
-resolver for this new contract.
+resolver for this new contract. The `/v1/internal/` namespace marks a backend
+integration API; it does not add another service credential or enforce network
+isolation. Deployments configure those network controls separately.
 
 ## Getting started
 

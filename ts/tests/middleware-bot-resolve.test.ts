@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { BotResolver, ResolvedPrincipal, ResolveRequest } from '../src/index.js'
+import { OctoAuthError, type BotResolver, type ResolvedPrincipal, type ResolveRequest } from '../src/index.js'
 import { expressBotResolveMiddleware, type MinimalExpressRequest } from '../src/middleware/express.js'
 
 function response() {
@@ -42,5 +42,24 @@ describe('expressBotResolveMiddleware', () => {
     await expressBotResolveMiddleware({ resolver, mode: 'OBO', action: 'project.read' })(req, res, () => {})
     expect(res.statusCode).toBe(400)
     expect(called).toBe(false)
+  })
+
+  it.each([
+    ['empty marker on AS_BOT', 'AS_BOT', undefined, { space_id: 'S', obo: '' }, false],
+    ['duplicate OBO marker', 'OBO', 'project.read', { space_id: 'S', obo: ['true', 'true'] }, false],
+    ['caller-selected subject', 'OBO', 'project.read', { space_id: 'S', obo: 'true', human_uid: 'H' }, false],
+    ['duplicate Space', 'OBO', 'project.read', { space_id: ['S1', 'S2'], obo: 'true' }, true],
+  ] as const)('rejects %s', async (_name, mode, action, query, expectedCall) => {
+    let called = false
+    const resolver: BotResolver = { async resolve(_credential, request) {
+      called = true
+      if (!request.spaceId) throw new OctoAuthError('invalid-request', 'spaceId is required')
+      throw new Error('unexpected resolve call')
+    } }
+    const req: MinimalExpressRequest = { headers: { authorization: 'Bearer bf_secret' }, query }
+    const res = response()
+    await expressBotResolveMiddleware({ resolver, mode, ...(action ? { action } : {}) })(req, res, () => {})
+    expect(res.statusCode).toBe(400)
+    expect(called).toBe(expectedCall)
   })
 })

@@ -2,8 +2,8 @@
  * Metrics collector interface + no-op default.
  *
  * See design doc §11 and Go SDK's metrics.go. Implementations must be safe
- * for concurrent use and return quickly — verifiers call these on the request
- * hot path.
+ * for concurrent use and return quickly — verifiers and the Bot resolver call
+ * these on the request hot path.
  */
 
 import type { PrincipalKind, Verifier as _Verifier } from './verifier.js'
