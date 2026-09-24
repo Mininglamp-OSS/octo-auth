@@ -59,6 +59,41 @@ v := octoauth.NewBotTokenVerifier(cfg)
 p, err := v.Verify(ctx, "bf_...")
 ```
 
+### Bot identity and owner delegation (new Resolve API)
+
+The Resolver uses the same Bot token as the existing Bot-token verifier; it
+does not require a separate service token. A backend must derive `Action` from
+its own controlled route, never accept an arbitrary Action or Human subject
+from the Bot. Both modes require the request's target Space. The
+`/v1/internal/` namespace identifies a backend integration API; it does not add
+a caller credential or enforce network isolation. Configure `BaseURL` for the
+same octo-server deployment used by the existing verifiers.
+
+```go
+cfg := &octoauth.Config{BaseURL: os.Getenv("OCTO_SERVER_URL")}
+resolver := octoauth.NewResolver(cfg)
+principal, err := resolver.Resolve(ctx, "bf_...", octoauth.ResolveRequest{
+    Mode: octoauth.ModeOBO, SpaceID: "space-1", Action: "project.read",
+})
+if err != nil { /* deny the request; do not fall back to AS_BOT */ }
+// principal.Actor is the Bot; principal.Subject is its current Human owner.
+// The business service still checks Subject's current resource permissions.
+```
+
+For a Bot-self request, use `ModeAsBot` and omit `Action`. Existing `Verify`
+methods and their response semantics are unchanged. See
+[`../contract/auth-resolve.yaml`](../contract/auth-resolve.yaml).
+For `net/http` routes, `nethttp.WrapBotResolve` fixes the mode/Action at route
+registration, checks the `obo=true` marker on OBO routes, and attaches the
+result for `nethttp.BotResolvedPrincipal(r.Context())`. AS_BOT routes reject
+the marker, and both modes reject `on_behalf_of`, `human_uid`, and
+`subject_uid`. Other HTTP frameworks should apply the same fixed-route policy
+before calling the Resolver directly.
+The default `space_id` query extractor is only transport plumbing: before
+business access, bind or compare that Space with the Space that owns the
+requested resource. Prefer a trusted `BotResolveOptions.SpaceID` extractor
+when the route already knows the resource's Space.
+
 ### User-API-key verifier
 
 ```go
@@ -126,7 +161,8 @@ constructor `applyDefaults` step fills it in.
 
 | Symbol | Purpose |
 |---|---|
-| `octoauth.Config` | Shared configuration (`BaseURL`, `HTTPClient`, `Cache`, `Metrics`, `Logger`, TTLs, `RequestIncludeContext`, `HashCacheKey`). Only `BaseURL` is required. |
+| `octoauth.Config` | Shared configuration (`BaseURL`, `HTTPClient`, `Cache`, `Metrics`, `Logger`, TTLs, `RequestIncludeContext`, `HashCacheKey`). |
+| `octoauth.NewResolver` / `ResolveRequest` / `ResolvedPrincipal` | Two-mode Bot identity resolution (`AS_BOT` or `OBO`); OBO returns Actor, Subject and Delegation, not business authorization. |
 | `octoauth.NewSessionVerifier` / `NewBotTokenVerifier` / `NewUserKeyVerifier` | Per-realm constructors returning a `Verifier`. |
 | `octoauth.NewMultiVerifier` / `NewFullMultiVerifier` | Prefix-dispatch facade over child verifiers. |
 | `octoauth.Verifier` | `Kind() PrincipalKind`; `Verify(ctx, credential) (*Principal, error)`. |

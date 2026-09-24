@@ -3,15 +3,15 @@ package octoauth
 import "time"
 
 // MetricsCollector receives internal SDK telemetry. Implementations MUST be
-// safe for concurrent use and MUST return quickly; verifiers call these
-// methods on the request hot path.
+// safe for concurrent use and MUST return quickly; verifiers and the Bot
+// resolver call these methods on the request hot path.
 //
 // See design doc §11 for the built-in call sites:
-//   - ObserveVerifyDuration is called on every Verify with the observed
+//   - ObserveVerifyDuration is called on every Verify or Resolve with the observed
 //     latency and a `result` tag (one of "hit", "miss-ok", "miss-err",
 //     "error").
 //   - IncCacheHit is called on every cache lookup with hit=true|false.
-//   - IncErrorByKind is called whenever a Verify returns a non-nil error.
+//   - IncErrorByKind is called whenever a Verify or Resolve returns a typed error.
 type MetricsCollector interface {
 	ObserveVerifyDuration(verifier PrincipalKind, result string, duration time.Duration)
 	IncCacheHit(verifier PrincipalKind, hit bool)

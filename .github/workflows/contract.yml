@@ -36,6 +36,9 @@ jobs:
       - name: Lint errors-v1.yaml
         run: spectral lint contract/errors-v1.yaml --fail-severity=warn
 
+      - name: Lint auth-resolve.yaml
+        run: spectral lint contract/auth-resolve.yaml --fail-severity=warn
+
   contract-breaking-check:
     name: Breaking-change check (oasdiff)
     runs-on: ubuntu-latest
@@ -48,11 +51,18 @@ jobs:
       - name: Extract base contract
         run: |
           mkdir -p /tmp/base
-          if git show "${{ github.event.pull_request.base.sha }}:contract/auth-v1.yaml" > /tmp/base/auth-v1.yaml 2>/dev/null; then
+          if git show "${{ github.event.pull_request.base.sha }}:contract/auth-v1.yaml" > /tmp/base/auth-v1.yaml 2>/dev/null && \
+             git show "${{ github.event.pull_request.base.sha }}:contract/errors-v1.yaml" > /tmp/base/errors-v1.yaml 2>/dev/null; then
             echo "have_base=true" >> "$GITHUB_ENV"
           else
             echo "have_base=false" >> "$GITHUB_ENV"
             echo "No base contract at ${{ github.event.pull_request.base.sha }}; skipping breaking-change check."
+          fi
+          if git show "${{ github.event.pull_request.base.sha }}:contract/auth-resolve.yaml" > /tmp/base/auth-resolve.yaml 2>/dev/null; then
+            echo "have_resolve_base=true" >> "$GITHUB_ENV"
+          else
+            echo "have_resolve_base=false" >> "$GITHUB_ENV"
+            echo "No base Resolve contract at ${{ github.event.pull_request.base.sha }}; skipping its breaking-change check."
           fi
 
       - name: oasdiff breaking
@@ -63,4 +73,14 @@ jobs:
             -v "/tmp/base:/base" \
             tufin/oasdiff:v1.23.0@sha256:336775b5ea56631d1fcc38efa79aa5c7b52c9c3c97e3d4c9568d6682aeadd21b \
             breaking /base/auth-v1.yaml /specs/auth-v1.yaml \
+            --fail-on ERR
+
+      - name: oasdiff Resolve breaking
+        if: env.have_resolve_base == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/contract:/specs" \
+            -v "/tmp/base:/base" \
+            tufin/oasdiff:v1.23.0@sha256:336775b5ea56631d1fcc38efa79aa5c7b52c9c3c97e3d4c9568d6682aeadd21b \
+            breaking /base/auth-resolve.yaml /specs/auth-resolve.yaml \
             --fail-on ERR

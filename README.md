@@ -6,7 +6,7 @@ Client SDK to verify [octo-server](https://github.com/Mininglamp-OSS/octo-server
 
 | Path                | Contents                                                                      |
 | ------------------- | ----------------------------------------------------------------------------- |
-| [`contract/`](./contract) | OpenAPI 3.1 wire contract for the three `/v1/auth/verify*` endpoints — the single source of truth that both SDKs implement. |
+| [`contract/`](./contract) | OpenAPI 3.1 wire contracts for the three `/v1/auth/verify*` endpoints and the Bot `/v1/internal/auth/resolve` endpoint. |
 | [`go/`](./go)             | Go SDK. Requires Go 1.25+. Middleware for `net/http`, `gin`, `echo`, and `wkhttp`. |
 | [`ts/`](./ts)             | TypeScript SDK (pure ESM). Requires Node 20+. Middleware for `express` and `@hocuspocus/server`. |
 
@@ -19,6 +19,13 @@ Both SDKs expose the same three realms behind a unified `Verifier` interface, pl
 - **userKeyVerifier** — long-lived user API keys (`uk_<...>`).
 
 See [`contract/auth-v1.yaml`](./contract/auth-v1.yaml) for the wire schema and [`contract/errors-v1.yaml`](./contract/errors-v1.yaml) for the error-code enumeration.
+
+Bot identity resolution with an explicit Space and optional owner delegation is
+specified in [`contract/auth-resolve.yaml`](./contract/auth-resolve.yaml). Both
+SDKs keep the existing verification API unchanged and expose a separate Bot
+resolver for this new contract. The `/v1/internal/` namespace marks a backend
+integration API; it does not add another service credential or enforce network
+isolation. Deployments configure those network controls separately.
 
 ## Getting started
 

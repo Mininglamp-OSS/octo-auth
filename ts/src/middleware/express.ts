@@ -14,7 +14,8 @@
 import { OctoAuthError, defaultErrorMapper } from '../errors.js'
 import type { ErrorMapperFn } from '../errors.js'
 import type { Principal, PrincipalKind, Verifier } from '../verifier.js'
-import { KindSession } from '../verifier.js'
+import { KindBot, KindSession } from '../verifier.js'
+import type { BotResolver, BotResolveMode, ResolvedPrincipal } from '../resolver.js'
 import { clonePrincipal } from '../principal-clone.js'
 import { extractCredential } from '../extract.js'
 import type { Credential } from '../verifier.js'
@@ -28,10 +29,65 @@ import type { Credential } from '../verifier.js'
  */
 export interface MinimalExpressRequest {
   headers: Record<string, string | string[] | undefined>
+  query?: Record<string, unknown>
   /** Populated by this middleware on success. */
   principal?: Principal
   /** Populated by this middleware on success. */
   credential?: Credential
+  /** Populated by expressBotResolveMiddleware on success. */
+  resolvedPrincipal?: ResolvedPrincipal
+}
+
+/** Fixed route policy for the new Bot-only Resolve middleware. */
+export interface ExpressBotResolveOptions {
+  resolver: BotResolver
+  mode: BotResolveMode
+  action?: string
+  /** Defaults to the explicit `space_id` query parameter. */
+  spaceId?: (req: MinimalExpressRequest) => string
+  errorMapper?: ErrorMapperFn
+}
+
+/**
+ * Resolve Bot identity for a controlled route. The Action is fixed at
+ * construction time, never read from caller input. An OBO route requires
+ * `obo=true` and refuses to fall back to AS_BOT on any denial.
+ */
+export function expressBotResolveMiddleware(opts: ExpressBotResolveOptions): MinimalExpressHandler {
+  if (!opts?.resolver || (opts.mode !== 'OBO' && opts.mode !== 'AS_BOT') ||
+      (opts.mode === 'OBO') !== Boolean(opts.action)) {
+    throw new Error('octoauth/middleware/express: Resolver, mode, and fixed OBO Action are required')
+  }
+  const mapper = opts.errorMapper ?? defaultErrorMapper
+  const spaceId = opts.spaceId ?? ((req: MinimalExpressRequest) => {
+    const value = req.query?.space_id
+    return typeof value === 'string' ? value : ''
+  })
+  return async (req, res, next) => {
+    try {
+      const credential = extractCredential(req)
+      if (credential.kind !== KindBot) {
+        throw new OctoAuthError('invalid-credential', 'Bot credential required', { verifier: KindBot })
+      }
+      const marker = req.query?.obo
+      if ((opts.mode === 'OBO' && marker !== 'true') ||
+          (opts.mode === 'AS_BOT' && marker !== undefined)) {
+        throw new OctoAuthError('invalid-request', 'OBO marker does not match route mode', { verifier: KindBot })
+      }
+      for (const forbidden of ['on_behalf_of', 'human_uid', 'subject_uid']) {
+        if (Object.prototype.hasOwnProperty.call(req.query ?? {}, forbidden)) {
+          throw new OctoAuthError('invalid-request', 'Subject cannot be selected by caller', { verifier: KindBot })
+        }
+      }
+      req.resolvedPrincipal = await opts.resolver.resolve(credential.raw, {
+        mode: opts.mode, spaceId: spaceId(req),
+        ...(opts.mode === 'OBO' ? { action: opts.action } : {}),
+      })
+      next()
+    } catch (err) {
+      abort(res, mapper, err)
+    }
+  }
 }
 
 export interface MinimalExpressResponse {

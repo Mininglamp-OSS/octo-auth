@@ -50,7 +50,7 @@ const MAX_VERIFY_BODY_BYTES = 1 << 20 // 1 MiB
  * cumulative byte count exceeds `maxBytes`. On overflow it cancels the
  * reader and throws — the caller maps this to an InfraFailure.
  */
-async function readTextBounded(
+export async function readTextBounded(
   resp: Response,
   maxBytes: number,
 ): Promise<string> {
@@ -193,7 +193,7 @@ export function statusToError(
   })
 }
 
-function logVerifyResult(
+export function logVerifyResult(
   cfg: ResolvedConfig,
   verifier: PrincipalKind,
   endpoint: string,
